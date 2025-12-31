@@ -1,14 +1,3 @@
-**The short answer is: No.** You cannot paste "formatted" text (like this bold text) directly into a GitHub `README.md` file. GitHub requires **Markdown code** (the raw text with symbols like `#` and `*`) to display correctly.
-
-If you paste formatted text, it will lose all its structure (headers, bolding, code boxes).
-
-**Here is the corrected Raw Markdown Code.**
-I have fixed the rendering issue by using a special "container" so you can copy the whole thing safely.
-
-1. **Copy** everything inside the gray box below.
-2. **Paste** it directly into your `README.md` file on GitHub.
-
-```markdown
 # Firewalla Unbound: Advanced Blocklist Integration (External Lists)
 
 This configuration allows you to manually add massive, third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists to bypass the 200-entry limit in the native app.
