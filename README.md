@@ -38,11 +38,11 @@ We create the script first to ensure we can download the list before configuring
 
 # --- EXTERNAL LIST CONFIGURATION ---
 # List 1: OISD Big (High-end hardware only)
-URL1="[https://big.oisd.nl/unbound](https://big.oisd.nl/unbound)"
+URL1="https://big.oisd.nl/unbound"
 TARGET1="/home/pi/.firewalla/config/unbound_local/blocklist_1.conf"
 
 # To add a second list, uncomment these lines:
-# URL2="[https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.conf](https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.conf)"
+# URL2="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.conf"
 # TARGET2="/home/pi/.firewalla/config/unbound_local/blocklist_2.conf"
 # -----------------------------------
 
