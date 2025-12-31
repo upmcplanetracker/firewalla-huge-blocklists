@@ -110,9 +110,9 @@ Add the script to your user crontab to update the list weekly (Sundays at midnig
 ```
 
 **Apply Changes:**
-To ensure the crontab is loaded and the network stack syncs correctly, perform a reboot:
+To ensure the crontab is loaded and the network stack syncs correctly, reboot your Firewalla (will take 3-4 min for your internet to return):
 ```bash
-sync && sudo reboot
+sudo reboot
 ```
 
 ---
