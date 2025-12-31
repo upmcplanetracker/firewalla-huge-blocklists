@@ -77,7 +77,7 @@ ls -lh /home/pi/.firewalla/config/unbound_local/blocklist_1.conf
 ```
 
 ### Step 3: The Unbound Config
-Now that the blocklist file exists, point Unbound to it.
+Now that the blocklist file exists, point Unbound to it.  If you already have other things in your .conf file, such as DNS over TLS, you can add this into the same .conf file.
 
 **File Path:** `/home/pi/.firewalla/config/unbound_local/unbound_custom.conf`
 
