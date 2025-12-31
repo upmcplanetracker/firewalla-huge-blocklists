@@ -1,6 +1,6 @@
 # Firewalla Unbound: Advanced Blocklist Integration (External Lists)
 
-This configuration allows you to manually add massive, unsupported, third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
+This configuration allows you to manually add massive, unsupported (for non-MSP subscribers), third-party blocklists (oisd big, hagezi ultimate, etc) directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
 
 ## ⚠️ Critical: Before You Begin
 
