@@ -1,6 +1,6 @@
 # Firewalla Unbound: Advanced Blocklist Integration (External Lists)
 
-This configuration allows you to manually add massive, unsupported, third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists to bypass the 200-entry limit in the native app.
+This configuration allows you to manually add massive, unsupported, third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
 
 ## ⚠️ Critical: Before You Begin
 
