@@ -9,6 +9,7 @@ This configuration allows you to manually add massive, unsupported, third-party 
 * **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats.
 * **App Toggles:** You cannot enable or disable these lists via the Firewalla app interface. All management must be done via SSH.
 * **DNS Booster:** You must keep the **DNS Booster ON** in the app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
+* **Unbound:** You must be using Unbound as the DNS resolver.
 
 ### 2. Format & Compatibility
 * **Requirement:** You must use **Unbound-formatted** lists. The file must contain `local-zone:` entries.
