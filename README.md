@@ -138,4 +138,3 @@ nslookup doubleclick.net
 
 **Success:** The result should return `0.0.0.0` or `NXDOMAIN`.  
 **Failure:** If it returns a real IP address, the blocklist is not loading correctly.
-```
