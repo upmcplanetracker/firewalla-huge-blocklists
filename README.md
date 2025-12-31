@@ -1,11 +1,11 @@
 # Firewalla Unbound: Advanced Blocklist Integration (External Lists)
 
-This configuration allows you to manually add massive, unsupported (for non-MSP subscribers), third-party blocklists (oisd big, hagezi ultimate, etc) directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
+This configuration allows you to manually add massive, unsupported (for non-MSP subscribers), third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
 
 ## ⚠️ Critical: Before You Begin
 
 ### 1. External List Management
-* **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD big, certain HaGeZi).
+* **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD big, HaGeZi Ultimate or Pro++).
 * **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats.
 * **App Toggles:** You cannot enable or disable these lists via the Firewalla app interface. All management must be done via SSH.
 * **DNS Booster:** You must keep the **DNS Booster ON** in the app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
