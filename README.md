@@ -1,6 +1,6 @@
 # Firewalla Unbound: Advanced Blocklist Integration (External Lists)
 
-This configuration allows you to manually add massive, unsupported (for non-MSP subscribers), third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
+This configuration allows you to manually add massive, unsupported (for MSP lite users), third-party blocklists directly into Unbound on your Firewalla. Use this if you need "Big" or "Ultimate" protection that goes beyond the standard Firewalla-provided target lists.
 
 ## ⚠️ Critical: Before You Begin
 
@@ -18,7 +18,7 @@ This configuration allows you to manually add massive, unsupported (for non-MSP 
 ### 3. Hardware Tiers & Memory
 Large lists (~400k+ domains) consume significant RAM. Match your list choice to your hardware:
 
-| Hardware Tier | Firewalla Models | Recommended Cache | Max Domain Recommendation |
+| Hardware Tier | Firewalla Models | Recommended Unbound Cache | Max Domain Recommendation |
 | :--- | :--- | :--- | :--- |
 | **Entry** | Purple SE, Blue Plus | 16m / 32m | **Avoid Big Lists** (Use Light only) |
 | **Mid** | Gold, Purple | 32m / 64m | Up to 100k domains |
