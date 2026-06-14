@@ -8,8 +8,8 @@ This configuration allows you to manually add massive, unsupported (for MSP lite
 * **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD big, HaGeZi Ultimate or Pro++).
 * **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats.
 * **App Toggles:** You cannot enable or disable these lists via the Firewalla app interface. All management must be done via SSH.
-* **DNS Booster:** You must keep the **DNS Booster ON** in the app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
-* **Unbound:** You must be using Unbound as the DNS resolver. Please visit my Firewalla Unbound Configuration https://github.com/upmcplanetracker/firewalla-unbound-DoT-config repo first to learn how to set the Unbound cache size.
+* **DNS Booster:** You must keep the **DNS Booster ON** in the Firewall app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
+* **Unbound:** You must be using Unbound as the DNS resolver. Please visit my [Firewalla Unbound Configuration repo](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config) first to learn how to set the Unbound cache size.
 
 ### 2. Format & Compatibility
 * **Requirement:** You must use **Unbound-formatted** lists. The file must contain `local-zone:` entries.
@@ -29,9 +29,20 @@ Large lists (~400k+ domains) consume significant RAM. Match your list choice to 
 ## 🛠️ Configuration
 
 ### Step 1: Create the Update Script
-We create the script first to ensure we can download the list before configuring Unbound to look for it.
+
+This script is currently set for the OISD Big block list. You can edit the script and change it to whatever blocklist you'd like to use.  If you have 2+ blocklists, you can either modify the script to pull multiple scripts or you can create a second script that will pull a different blocklist. There is lots of room to improve this script, so if you have any better ideas such as allowing CLI variables or pulling blocklist names and URL in from a file, create a PR.
+
+We create the script first to ensure we can download the list before configuring Unbound to look for it.  I like using `nano` for this.  `ssh` into the Firewalla first, then:
+```
+unalias apt
+sudo apt update
+# never never never sudo apt upgrade. it will probably break your Firewalla and you will have to reflash it.
+sudo apt install nano
+```
 
 **File Path:** `/home/pi/update_dns.sh`
+
+`nano /home/pi/update_dns.sh`
 
 ```bash
 #!/bin/bash
@@ -90,13 +101,15 @@ Run this in your terminal:
 
 *Check that the file was created:*
 ```bash
-ls -lh /home/pi/.firewalla/config/unbound_local/blocklist_1.conf
+ls -lh /home/pi/.firewalla/config/unbound_local/oisd_big.conf
 ```
 
 ### Step 3: The Unbound Config
 Now that the blocklist file exists, point Unbound to it.  If you already have other things in your .conf file, such as DNS over TLS, you can add this into the same .conf file.
 
 **File Path:** `/home/pi/.firewalla/config/unbound_local/unbound_custom.conf`
+
+`nano /home/pi/.firewalla/config/unbound_local/unbound_custom.conf`
 
 ```yaml
 server:
@@ -108,8 +121,8 @@ server:
     prefetch-key: yes
 
     # To add multiple lists, add more include lines here:
-    include: "/home/pi/.firewalla/config/unbound_local/blocklist_1.conf"
-    # include: "/home/pi/.firewalla/config/unbound_local/blocklist_2.conf"
+    include: "/home/pi/.firewalla/config/unbound_local/oisd_big.conf"
+    # include: "/home/pi/.firewalla/config/unbound_local/blocklist_2.conf" if you have other lists.
 ```
 
 ### Step 4: Restart & Persistence
