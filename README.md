@@ -28,41 +28,15 @@ Critical: Before You Begin
 *   **Requirement:** You must use **Unbound-formatted** lists. The file must contain `local-zone:` entries.
 *   **Warning:** Standard "hosts" files (starting with `0.0.0.0` or `127.0.0.1`) **will break Unbound**. If a list is not properly formatted, your internet will stop working.
 
-### 3\. Hardware Tiers & Memory
+### 3. Hardware Tiers & Memory
 
 Large lists (~400k+ domains) consume significant RAM. Match your list choice to your hardware:
 
-Hardware Tier
-
-Firewalla Models
-
-Recommended Unbound Cache
-
-Max Domain Recommendation
-
-**Entry**
-
-Purple SE, Blue Plus
-
-16m / 32m
-
-**Avoid Big Lists** (Use Light only)
-
-**Mid**
-
-Gold, Purple
-
-32m / 64m
-
-Up to 100k domains
-
-**High**
-
-Gold Plus, Gold Pro
-
-128m / 256m
-
-400k+ domains (Big/Ultimate)
+| Hardware Tier | Firewalla Models | Recommended Unbound Cache | Max Domain Recommendation |
+| :--- | :--- | :--- | :--- |
+| **Entry** | Purple SE, Blue Plus | 16m / 32m | **Avoid Big Lists** (Use Light only) |
+| **Mid** | Gold, Purple | 32m / 64m | Up to 100k domains |
+| **High** | Gold Plus, Gold Pro | 128m / 256m | 400k+ domains (Big/Ultimate) |
 
 * * *
 
