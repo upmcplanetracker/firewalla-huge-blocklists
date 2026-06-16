@@ -41,6 +41,14 @@ error_exit() {
     exit 1
 }
 
+fix_ownership() {
+    local target_dir="$1"
+    if [[ -d "$target_dir" ]]; then
+        chown -R pi:pi "$target_dir" 2>/dev/null || true
+        log "Fixed ownership for $target_dir"
+    fi
+}
+
 check_disk_space() {
     local required_space=100  # MB
     local available_space=$(df -m /tmp | awk 'NR==2 {print $4}')
@@ -159,6 +167,10 @@ apply_update() {
     # Move new config into place
     mv "$source_file" "$target_file"
     log "Installed new configuration: $target_file"
+    
+    # Fix ownership of the config file
+    chown pi:pi "$target_file" 2>/dev/null || true
+    log "Fixed ownership for $target_file"
 }
 
 restart_unbound() {
@@ -177,6 +189,8 @@ restart_unbound() {
             local original="${backup%.backup}"
             mv "$backup" "$original"
             log "Restored $original from backup"
+            # Fix ownership after restore
+            chown pi:pi "$original" 2>/dev/null || true
         done
         
         if sudo systemctl restart unbound; then
@@ -323,6 +337,8 @@ create_env_template() {
     # Check if the env file already exists
     if [[ -f "$ENV_FILE" ]]; then
         log "✓ .env file already exists at $ENV_FILE - keeping your edits"
+        # Fix ownership if it exists but is owned by root
+        chown pi:pi "$ENV_FILE" 2>/dev/null || true
         return 0
     fi
     
@@ -358,10 +374,15 @@ oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oi
 # custom_list|https://example.com/unbound-list.txt|/home/pi/.firewalla/config/unbound_local/custom.conf
 EOF
     
+    # Fix ownership - make sure pi user owns it
+    chown pi:pi "$ENV_FILE" 2>/dev/null || true
+    chown -R pi:pi "$(dirname "$ENV_FILE")" 2>/dev/null || true
+    
     log "✓ Created .env configuration template at $ENV_FILE"
     log "ℹ Please edit $ENV_FILE to customize your blocklists"
     log "  Example: nano $ENV_FILE"
     log "  The script will NEVER overwrite this file once it exists"
+    log "✓ File ownership set to pi:pi"
 }
 
 process_list() {
@@ -526,6 +547,9 @@ main() {
             failed_lists+=("$list_name")
         fi
     done
+    
+    # Fix ownership of the entire config directory
+    fix_ownership "/home/pi/.firewalla/config"
     
     # Restart Unbound once after all updates (respects DRY_RUN)
     if ! restart_unbound; then
