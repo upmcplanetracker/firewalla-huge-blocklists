@@ -19,27 +19,26 @@ ENV_FILE="${ENV_FILE:-/home/pi/.firewalla/config/blocklists.env}"
 LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
+DRY_RUN="${DRY_RUN:-false}"
+QUIET="${QUIET:-false}"
 
 # =============================================================================
 # Functions
 # =============================================================================
 
 log() {
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] $1" | tee -a "$LOG_FILE"
+    if [[ "$QUIET" == "true" ]]; then
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" >> "$LOG_FILE"
+    else
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" | tee -a "$LOG_FILE"
+    fi
 }
 
 error_exit() {
     log "ERROR: $1"
     exit 1
-}
-
-cleanup() {
-    # Only try to clean up if TEMP_FILE is set and exists
-    if [[ -n "${TEMP_FILE:-}" && -f "$TEMP_FILE" ]]; then
-        rm -f "$TEMP_FILE"
-        log "Cleaned up temporary file"
-    fi
 }
 
 check_disk_space() {
@@ -79,7 +78,7 @@ download_with_retry() {
     log "Downloading $list_name from $url (attempt $attempt/$MAX_RETRIES)"
     
     while [[ $attempt -le $MAX_RETRIES ]]; do
-        if curl -f -L -o "$output_file" --connect-timeout 30 --max-time 300 "$url"; then
+        if curl -f -L -o "$output_file" --connect-timeout 30 --max-time 300 "$url" 2>/dev/null; then
             success=true
             break
         else
@@ -144,6 +143,11 @@ apply_update() {
     local target_file="$2"
     local list_name="$3"
     
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: Would apply update for $list_name"
+        return 0
+    fi
+    
     log "Applying update for $list_name..."
     
     # Create backup of current config if it exists
@@ -158,6 +162,11 @@ apply_update() {
 }
 
 restart_unbound() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: Would restart Unbound"
+        return 0
+    fi
+    
     log "Restarting Unbound..."
     
     if ! sudo systemctl restart unbound; then
@@ -192,18 +201,26 @@ verify_unbound() {
     fi
     log "✓ Unbound is running"
     
-    # Test DNS resolution - use system DNS (don't specify 127.0.0.1)
+    # Check memory usage
+    local memory_mb=$(free -m | awk '/Mem:/ {print $3}')
+    local total_mb=$(free -m | awk '/Mem:/ {print $2}')
+    local percent=$((memory_mb * 100 / total_mb))
+    log "Memory usage: ${memory_mb}MB / ${total_mb}MB (${percent}%)"
+    if [[ $percent -gt 90 ]]; then
+        log "WARNING: High memory usage! Consider using a smaller blocklist."
+    fi
+    
+    # Test DNS resolution through DNS Booster (system DNS)
+    log "Testing DNS resolution..."
     if command -v dig &> /dev/null; then
-        log "Testing DNS resolution..."
         if dig google.com +short &> /dev/null; then
-            log "✓ DNS resolution test passed"
+            log "✓ DNS resolution test passed (DNS Booster is working)"
         else
             log "WARNING: DNS resolution test failed. Check your network."
         fi
     elif command -v nslookup &> /dev/null; then
-        log "Testing DNS resolution..."
         if nslookup google.com &> /dev/null; then
-            log "✓ DNS resolution test passed"
+            log "✓ DNS resolution test passed (DNS Booster is working)"
         else
             log "WARNING: DNS resolution test failed. Check your network."
         fi
@@ -211,16 +228,39 @@ verify_unbound() {
         log "⚠ dig/nslookup not available, skipping DNS resolution test"
     fi
     
-    # Test a known blocked domain to verify blocklist is working
-    log "Testing blocklist functionality..."
-    if command -v nslookup &> /dev/null; then
-        local result=$(nslookup doubleclick.net 2>&1 | grep -E "Address|NXDOMAIN" | head -1)
-        if [[ "$result" =~ "0.0.0.0" ]] || [[ "$result" =~ "NXDOMAIN" ]]; then
-            log "✓ Blocklist test passed: doubleclick.net blocked ($result)"
+    # Check Unbound logs for errors (skip duplicate warnings)
+    log "Checking Unbound logs for errors..."
+    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | wc -l)
+    if [[ $error_count -eq 0 ]]; then
+        log "✓ No errors in Unbound logs"
+    else
+        log "WARNING: Found $error_count errors in Unbound logs"
+        sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | head -5 | while read -r line; do
+            log "  - $line"
+        done
+    fi
+    
+    # Check if blocklist is actually in the Unbound config
+    local unbound_conf="/home/pi/.firewalla/config/unbound_local/unbound_custom.conf"
+    if [[ -f "$unbound_conf" ]]; then
+        if grep -q "include:.*\.conf" "$unbound_conf"; then
+            log "✓ Blocklist includes found in Unbound config"
         else
-            log "ℹ Blocklist test: doubleclick.net not obviously blocked (this is normal if it's not in the list)"
+            log "WARNING: No blocklist includes found in Unbound config!"
         fi
     fi
+    
+    # Check if blocklist file exists and has content
+    for conf_file in /home/pi/.firewalla/config/unbound_local/*.conf; do
+        if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
+            local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
+            if [[ $block_count -gt 0 ]]; then
+                log "✓ $(basename "$conf_file") loaded with $block_count entries"
+            fi
+        fi
+    done
+    
+    log "✓ Unbound verification complete"
 }
 
 get_block_count() {
@@ -344,25 +384,29 @@ process_list() {
     old_count=$(get_block_count "$output_file")
     log "Old block count for $list_name: $old_count"
     
-    # Apply update
+    # Apply update (respects DRY_RUN)
     apply_update "$temp_file" "$output_file" "$list_name"
     
     # Report new block count
-    new_count=$(get_block_count "$output_file")
-    log "New block count for $list_name: $new_count"
-    
-    if [[ $new_count -gt $old_count ]]; then
-        log "✓ $list_name increased by $((new_count - old_count)) domains"
-    elif [[ $new_count -lt $old_count ]]; then
-        log "ℹ $list_name decreased by $((old_count - new_count)) domains"
+    if [[ "$DRY_RUN" != "true" ]]; then
+        new_count=$(get_block_count "$output_file")
+        log "New block count for $list_name: $new_count"
+        
+        if [[ $new_count -gt $old_count ]]; then
+            log "✓ $list_name increased by $((new_count - old_count)) domains"
+        elif [[ $new_count -lt $old_count ]]; then
+            log "ℹ $list_name decreased by $((old_count - new_count)) domains"
+        else
+            log "ℹ $list_name unchanged"
+        fi
+        
+        # Clean up backup if everything succeeded
+        if [[ -f "${output_file}.backup" ]]; then
+            rm -f "${output_file}.backup"
+            log "Cleaned up backup file for $list_name"
+        fi
     else
-        log "ℹ $list_name unchanged"
-    fi
-    
-    # Clean up backup if everything succeeded
-    if [[ -f "${output_file}.backup" ]]; then
-        rm -f "${output_file}.backup"
-        log "Cleaned up backup file for $list_name"
+        log "DRY RUN: Would have reported block count changes"
     fi
     
     # Clean up temp file
@@ -372,9 +416,74 @@ process_list() {
     fi
 }
 
+show_usage() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Options:
+  -h, --help        Show this help message
+  -d, --dry-run     Perform a dry run (download and validate, but don't apply)
+  -q, --quiet       Quiet mode (minimal output, only log to file)
+  -e, --env FILE    Use specified .env file instead of default
+  -v, --version     Show version information
+
+Examples:
+  $0                 Run normally
+  $0 --dry-run       Test without applying changes
+  $0 --quiet         Run silently (good for cron jobs)
+  $0 --env custom.env Use a custom .env file
+
+Environment Variables:
+  ENV_FILE         Path to .env file (default: /home/pi/.firewalla/config/blocklists.env)
+  LOG_FILE         Path to log file (default: /var/log/unbound_update.log)
+  MAX_RETRIES      Number of download retries (default: 3)
+  RETRY_DELAY      Delay between retries in seconds (default: 5)
+  DRY_RUN          Set to "true" for dry run
+  QUIET            Set to "true" for quiet mode
+EOF
+}
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+
 main() {
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -d|--dry-run)
+                DRY_RUN="true"
+                shift
+                ;;
+            -q|--quiet)
+                QUIET="true"
+                shift
+                ;;
+            -e|--env)
+                ENV_FILE="$2"
+                shift 2
+                ;;
+            -v|--version)
+                echo "Firewalla Unbound Blocklist Update Script v2.0"
+                exit 0
+                ;;
+            *)
+                log "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
     log "=========================================="
     log "Starting Unbound blocklist update"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "** DRY RUN MODE - No changes will be applied **"
+    fi
     log "=========================================="
     
     # Pre-flight checks
@@ -418,13 +527,17 @@ main() {
         fi
     done
     
-    # Restart Unbound once after all updates
+    # Restart Unbound once after all updates (respects DRY_RUN)
     if ! restart_unbound; then
         error_exit "Update failed during restart phase"
     fi
     
-    # Verify Unbound is working
-    verify_unbound
+    # Verify Unbound is working (respects DRY_RUN)
+    if [[ "$DRY_RUN" != "true" ]]; then
+        verify_unbound
+    else
+        log "DRY RUN: Skipping Unbound verification"
+    fi
     
     # Report results
     log "=========================================="
@@ -433,6 +546,9 @@ main() {
         log "✓ All lists updated successfully!"
     else
         log "⚠ Some lists failed: ${failed_lists[*]}"
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "ℹ DRY RUN - No changes were applied"
     fi
     log "=========================================="
     log "Update completed!"
