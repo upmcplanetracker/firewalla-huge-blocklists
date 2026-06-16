@@ -81,7 +81,7 @@ The script uses a `.env` file to manage your blocklists. You have two options to
 
 Simply run the script once. It will create a template `blocklists.env` file at `/home/pi/.firewalla/config/blocklists.env`.
 
-    /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh
 
 The script will show output like:
 
@@ -118,9 +118,6 @@ Each line defines one blocklist. To enable a list, remove the `#` at the start o
     # OISD Big List (Recommended for High tier hardware)
     oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf
     
-    # OISD Light List (Recommended for Entry tier hardware)
-    oisd_light|https://oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_light.conf
-    
     # HaGeZi Pro List
     hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
     
@@ -133,7 +130,7 @@ Each line defines one blocklist. To enable a list, remove the `#` at the start o
 
 Now run the script again to download all the lists you enabled in the .env file:
 
-    /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh
 
 The script will:
 
@@ -167,7 +164,6 @@ Add or modify the following configuration:
     
         # Include ALL your blocklists from the .env file
         include: "/home/pi/.firewalla/config/unbound_local/oisd_big.conf"
-        include: "/home/pi/.firewalla/config/unbound_local/oisd_light.conf"
         include: "/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf"
         # include: "/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf"
 
@@ -191,7 +187,7 @@ The script can be scheduled to run automatically using cron. Here are several sc
 
 Update all lists every Sunday at midnight:
 
-    crontab -e
+    sudo crontab -e
 
 Add this line:
 
@@ -226,7 +222,7 @@ If you want different update frequencies for different lists, you can create sep
 Make them executable and add to crontab:
 
     chmod +x /home/pi/update_*.sh
-    crontab -e
+    sudo crontab -e
 
 Add:
 
@@ -237,7 +233,7 @@ Add:
 
 If you prefer to update manually, simply run:
 
-    /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh
 
 Whenever you want to refresh your lists.
 
@@ -277,7 +273,7 @@ Testing & Verification
 
 Run a lookup for a domain known to be on your blocklist (e.g., `doubleclick.net`):
 
-    nslookup doubleclick.net
+    nslookup ad.doubleclick.net 127.0.0.1
 
 **Success:** The result should return `0.0.0.0` or `NXDOMAIN`.
 
@@ -289,7 +285,6 @@ Check how many domains are being blocked by each list:
 
     # Count domains in each list
     grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
-    grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/oisd_light.conf
     grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
 
 ### Check Update Logs
@@ -332,7 +327,7 @@ Then add the corresponding include line to your Unbound config:
 
 Run the script again to download the new list:
 
-    /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh
 
 ### Removing a Blocklist
 
@@ -345,45 +340,12 @@ Then remove the corresponding `include:` line from your Unbound config and resta
 
 ### Popular Blocklist URLs
 
-List Name
-
-URL
-
-Size
-
-Recommended Hardware
-
-OISD Big
-
-`https://big.oisd.nl/unbound`
-
-~400k+
-
-High
-
-OISD Light
-
-`https://oisd.nl/unbound`
-
-~100k
-
-Entry/Mid
-
-HaGeZi Pro
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt`
-
-~150k
-
-Mid
-
-HaGeZi Ultimate
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt`
-
-~500k+
-
-High
+| List Name | URL | Size | Recommended Hardware |
+|-----------|-----|------|---------------------|
+| OISD Big | `https://big.oisd.nl/unbound` | ~400k+ | High |
+| OISD Light | `https://oisd.nl/unbound` | ~100k | Entry/Mid |
+| HaGeZi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt` | ~150k | Mid |
+| HaGeZi Ultimate | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt` | ~500k+ | High |
 
 * * *
 
@@ -464,12 +426,12 @@ Check these common issues:
 ### Script not running from crontab
 
     # Test that the script works when run manually
-    /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh
     
     # Check that the script has execute permissions
     ls -l /home/pi/update_dns.sh
     
-    # Use full path to script in crontab
+    # Use full path to script in sudo crontab -e
     0 0 * * 0 /home/pi/update_dns.sh
     
     # Check if logs show cron execution
@@ -533,7 +495,7 @@ If you need to update the script to a newer version:
     chmod +x /home/pi/update_dns.sh
     
     # Test the new version
-    ./update_dns.sh
+    sudo /home/pi/update_dns.sh
 
 * * *
 
