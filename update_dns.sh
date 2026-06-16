@@ -20,9 +20,6 @@ LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 
-# Initialize TEMP_FILE as empty
-TEMP_FILE=""
-
 # =============================================================================
 # Functions
 # =============================================================================
@@ -38,7 +35,8 @@ error_exit() {
 }
 
 cleanup() {
-    if [[ -n "$TEMP_FILE" && -f "$TEMP_FILE" ]]; then
+    # Only try to clean up if TEMP_FILE is set and exists
+    if [[ -n "${TEMP_FILE:-}" && -f "$TEMP_FILE" ]]; then
         rm -f "$TEMP_FILE"
         log "Cleaned up temporary file"
     fi
@@ -194,32 +192,20 @@ verify_unbound() {
     fi
     log "✓ Unbound is running"
     
-    # Test DNS resolution using nslookup (more reliable with DNS Booster)
-    if command -v nslookup &> /dev/null; then
+    # Test DNS resolution - use system DNS (don't specify 127.0.0.1)
+    if command -v dig &> /dev/null; then
         log "Testing DNS resolution..."
-        # Test a known good domain
-        if nslookup google.com 127.0.0.1 &> /dev/null; then
+        if dig google.com +short &> /dev/null; then
             log "✓ DNS resolution test passed"
         else
-            # Try without specifying DNS server (uses system default)
-            if nslookup google.com &> /dev/null; then
-                log "✓ DNS resolution test passed (using system DNS)"
-            else
-                log "WARNING: DNS resolution test failed. This might be normal if DNS Booster is handling queries."
-                log "  To verify, test a blocked domain: nslookup doubleclick.net"
-            fi
+            log "WARNING: DNS resolution test failed. Check your network."
         fi
-    elif command -v dig &> /dev/null; then
-        log "Testing DNS resolution using dig..."
-        if dig @127.0.0.1 google.com +short &> /dev/null; then
+    elif command -v nslookup &> /dev/null; then
+        log "Testing DNS resolution..."
+        if nslookup google.com &> /dev/null; then
             log "✓ DNS resolution test passed"
         else
-            # Try without specifying DNS server
-            if dig google.com +short &> /dev/null; then
-                log "✓ DNS resolution test passed (using system DNS)"
-            else
-                log "WARNING: DNS resolution test failed. This might be normal if DNS Booster is handling queries."
-            fi
+            log "WARNING: DNS resolution test failed. Check your network."
         fi
     else
         log "⚠ dig/nslookup not available, skipping DNS resolution test"
@@ -344,9 +330,6 @@ process_list() {
     local output_file="$3"
     local temp_file="/tmp/${list_name}_tmp.conf"
     
-    # Set TEMP_FILE for cleanup
-    TEMP_FILE="$temp_file"
-    
     log "=========================================="
     log "Processing list: $list_name"
     log "=========================================="
@@ -382,13 +365,14 @@ process_list() {
         log "Cleaned up backup file for $list_name"
     fi
     
-    # Clear TEMP_FILE after successful processing
-    TEMP_FILE=""
+    # Clean up temp file
+    if [[ -f "$temp_file" ]]; then
+        rm -f "$temp_file"
+        log "Cleaned up temporary file for $list_name"
+    fi
 }
 
 main() {
-    # Initial setup
-    trap cleanup EXIT
     log "=========================================="
     log "Starting Unbound blocklist update"
     log "=========================================="
@@ -400,9 +384,12 @@ main() {
     check_command systemctl
     check_disk_space
     
-    # Check if running as root (needed for systemctl)
+    # Note about sudo
     if [[ $EUID -ne 0 ]]; then
         log "Note: Not running as root. Some operations require sudo."
+        log "  The script will use sudo for:"
+        log "  - Installing curl (if needed)"
+        log "  - Restarting Unbound"
     fi
     
     # Create env template if it doesn't exist (will NOT overwrite existing)
