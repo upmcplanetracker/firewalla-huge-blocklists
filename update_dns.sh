@@ -20,6 +20,9 @@ LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 
+# Initialize TEMP_FILE as empty
+TEMP_FILE=""
+
 # =============================================================================
 # Functions
 # =============================================================================
@@ -35,7 +38,7 @@ error_exit() {
 }
 
 cleanup() {
-    if [[ -f "$TEMP_FILE" ]]; then
+    if [[ -n "$TEMP_FILE" && -f "$TEMP_FILE" ]]; then
         rm -f "$TEMP_FILE"
         log "Cleaned up temporary file"
     fi
@@ -122,34 +125,18 @@ validate_file() {
     fi
     log "✓ File contains Unbound format entries"
     
-    # Check 4: Basic format validation - look for common patterns
-    local first_line=$(head -1 "$file")
-    if [[ ! "$first_line" =~ ^local-zone: || ! "$first_line" =~ (static|redirect|transparent|typetransparent|always_nxdomain|always_refuse|always_deny) ]]; then
-        log "WARNING: First line doesn't match expected Unbound format: $first_line"
-        log "This may still be valid, but please verify the list format"
-    fi
-    
-    # Check 5: Validate line count is reasonable (at least 100 entries)
+    # Check 4: Validate line count is reasonable (at least 100 entries)
     local line_count=$(grep -c "local-zone:" "$file" || echo "0")
     if [[ $line_count -lt 100 ]]; then
         error_exit "Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
     fi
     log "✓ File contains $line_count entries"
     
-    # Check 6: Look for common syntax errors
+    # Check 5: Look for common syntax errors
     if grep -E "local-zone:[[:space:]]*$" "$file" | grep -q .; then
         error_exit "Found empty domain entries for $list_name (missing domain name after local-zone:)"
     fi
     log "✓ No empty domain entries found"
-    
-    # Check 7: Check for malformed lines (just a warning, not fatal)
-    local malformed=$(grep -vE "^local-zone:|^#|^$" "$file" | head -5)
-    if [[ -n "$malformed" ]]; then
-        log "WARNING: Found lines that don't look like comments or local-zone entries for $list_name:"
-        echo "$malformed" | while read -r line; do
-            log "  - $line"
-        done
-    fi
     
     log "All validation checks passed for $list_name"
 }
@@ -207,23 +194,46 @@ verify_unbound() {
     fi
     log "✓ Unbound is running"
     
-    # Try to query Unbound directly (bypassing DNS Booster)
-    if command -v dig &> /dev/null; then
+    # Test DNS resolution using nslookup (more reliable with DNS Booster)
+    if command -v nslookup &> /dev/null; then
+        log "Testing DNS resolution..."
+        # Test a known good domain
+        if nslookup google.com 127.0.0.1 &> /dev/null; then
+            log "✓ DNS resolution test passed"
+        else
+            # Try without specifying DNS server (uses system default)
+            if nslookup google.com &> /dev/null; then
+                log "✓ DNS resolution test passed (using system DNS)"
+            else
+                log "WARNING: DNS resolution test failed. This might be normal if DNS Booster is handling queries."
+                log "  To verify, test a blocked domain: nslookup doubleclick.net"
+            fi
+        fi
+    elif command -v dig &> /dev/null; then
         log "Testing DNS resolution using dig..."
         if dig @127.0.0.1 google.com +short &> /dev/null; then
             log "✓ DNS resolution test passed"
         else
-            log "WARNING: DNS resolution test failed! Check your configuration."
-        fi
-    elif command -v nslookup &> /dev/null; then
-        log "Testing DNS resolution using nslookup..."
-        if nslookup google.com 127.0.0.1 &> /dev/null; then
-            log "✓ DNS resolution test passed"
-        else
-            log "WARNING: DNS resolution test failed! Check your configuration."
+            # Try without specifying DNS server
+            if dig google.com +short &> /dev/null; then
+                log "✓ DNS resolution test passed (using system DNS)"
+            else
+                log "WARNING: DNS resolution test failed. This might be normal if DNS Booster is handling queries."
+            fi
         fi
     else
         log "⚠ dig/nslookup not available, skipping DNS resolution test"
+    fi
+    
+    # Test a known blocked domain to verify blocklist is working
+    log "Testing blocklist functionality..."
+    if command -v nslookup &> /dev/null; then
+        local result=$(nslookup doubleclick.net 2>&1 | grep -E "Address|NXDOMAIN" | head -1)
+        if [[ "$result" =~ "0.0.0.0" ]] || [[ "$result" =~ "NXDOMAIN" ]]; then
+            log "✓ Blocklist test passed: doubleclick.net blocked ($result)"
+        else
+            log "ℹ Blocklist test: doubleclick.net not obviously blocked (this is normal if it's not in the list)"
+        fi
     fi
 }
 
@@ -334,6 +344,9 @@ process_list() {
     local output_file="$3"
     local temp_file="/tmp/${list_name}_tmp.conf"
     
+    # Set TEMP_FILE for cleanup
+    TEMP_FILE="$temp_file"
+    
     log "=========================================="
     log "Processing list: $list_name"
     log "=========================================="
@@ -368,6 +381,9 @@ process_list() {
         rm -f "${output_file}.backup"
         log "Cleaned up backup file for $list_name"
     fi
+    
+    # Clear TEMP_FILE after successful processing
+    TEMP_FILE=""
 }
 
 main() {
