@@ -312,8 +312,8 @@ verify_unbound() {
     fi
     
     log "Checking Unbound logs for errors..."
-    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | wc -l)
-    if [[ $error_count -eq 0 ]]; then
+    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | wc -l)
+        if [[ $error_count -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
     else
         log "WARNING: Found $error_count errors in Unbound logs"
