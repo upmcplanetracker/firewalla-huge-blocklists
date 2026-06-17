@@ -714,9 +714,6 @@ create_env_template() {
 # OISD Big List (Unbound format)
 oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf
 
-# OISD Light List (Unbound format)
-# oisd_light|https://oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_light.conf
-
 # HaGeZi Pro List - Unbound format
 # hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
 
