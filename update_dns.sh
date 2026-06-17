@@ -26,6 +26,13 @@ QUIET="${QUIET:-false}"
 MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # MB
 UNBOUND_LOCAL_DIR="/home/pi/.firewalla/config/unbound_local"
 UNBOUND_CUSTOM_CONF="${UNBOUND_LOCAL_DIR}/unbound_custom.conf"
+TMP_DIR="${UNBOUND_LOCAL_DIR}/tmp"
+
+# Create temporary directory if it doesn't exist
+mkdir -p "$TMP_DIR"
+
+# Cleanup trap: remove temporary files on exit
+trap 'rm -f "$TMP_DIR"/*_tmp.conf 2>/dev/null' EXIT INT TERM
 
 # =============================================================================
 # Functions
@@ -56,7 +63,7 @@ fix_ownership() {
 
 check_disk_space() {
     local required_space=$MIN_DISK_SPACE
-    local available_space=$(df -m /tmp | awk 'NR==2 {print $4}')
+    local available_space=$(df -m "$TMP_DIR" | awk 'NR==2 {print $4}')
     
     if [[ $available_space -lt $required_space ]]; then
         log "WARNING: Low disk space: ${available_space}MB available, ${required_space}MB recommended"
@@ -73,14 +80,11 @@ check_command() {
 }
 
 check_curl_installed() {
+    # Firewalla boxes have curl pre-installed; just verify existence.
     if ! command -v curl &> /dev/null; then
-        log "curl not found, attempting to install..."
-        if sudo apt install -y curl; then
-            log "✓ curl installed successfully"
-        else
-            error_exit "Failed to install curl. Please install manually: sudo apt install curl"
-        fi
+        error_exit "curl is required but not installed. Please install manually: sudo apt install curl"
     fi
+    log "✓ curl found"
 }
 
 # -----------------------------------------------------------------------------
@@ -116,7 +120,7 @@ cleanup_unbound_includes() {
 }
 
 # -----------------------------------------------------------------------------
-# Log Rotation Setup
+# Log Rotation Setup (optional – auto-recreates if wiped)
 # -----------------------------------------------------------------------------
 setup_log_rotation() {
     local log_file="$1"
@@ -202,7 +206,7 @@ download_with_retry() {
 }
 
 # -----------------------------------------------------------------------------
-# Format detection and conversion
+# Format detection and conversion (all converters now use awk for speed)
 # -----------------------------------------------------------------------------
 detect_format_and_convert() {
     local input_file="$1"
@@ -258,10 +262,9 @@ detect_format_and_convert() {
 }
 
 # -----------------------------------------------------------------------------
-# Individual format converters - all now include the generated marker comment
+# Individual format converters - all use awk, no slow while read loops
 # -----------------------------------------------------------------------------
 
-# Helper to write the header with marker comment
 write_unbound_header() {
     local output_file="$1"
     {
@@ -308,9 +311,17 @@ convert_wildcard_to_unbound() {
     log "Converting Wildcard to Unbound format for $list_name..."
     
     write_unbound_header "$output_file"
-    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-    sed 's/^\*\.//' | \
-    awk '{printf "    local-zone: \"%s.\" always_null\n", $1}' >> "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        {
+            domain = $1
+            sub(/^\*\./, "", domain)
+            if (domain != "") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Wildcard conversion failed"
@@ -328,14 +339,16 @@ convert_hosts_to_unbound() {
     log "Converting Hosts format to Unbound for $list_name..."
     
     write_unbound_header "$output_file"
-    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-    grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+' | \
-    awk '{print $2}' | \
-    while read -r domain; do
-        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-            printf "    local-zone: \"%s.\" always_null\n" "$domain"
-        fi
-    done >> "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+/ {
+            domain = $2
+            if (domain != "" && substr(domain,1,1) != "#") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Hosts conversion failed"
@@ -353,18 +366,20 @@ convert_adblock_to_unbound() {
     log "Converting Adblock format to Unbound for $list_name..."
     
     write_unbound_header "$output_file"
-    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-    grep '^||' | \
-    sed 's/^||//' | \
-    sed 's/\^$//' | \
-    while read -r domain; do
-        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-            if [[ "$domain" == *"*"* ]]; then
-                domain=$(echo "$domain" | sed 's/\*\.//')
-            fi
-            printf "    local-zone: \"%s.\" always_null\n" "$domain"
-        fi
-    done >> "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^\|\|/ {
+            domain = $0
+            sub(/^\|\|/, "", domain)
+            sub(/\^$/, "", domain)
+            if (domain != "") {
+                # Remove wildcard prefix if present
+                gsub(/^\*\./, "", domain)
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Adblock conversion failed"
@@ -382,15 +397,18 @@ convert_dnsmasq_to_unbound() {
     log "Converting DNSMasq format to Unbound for $list_name..."
     
     write_unbound_header "$output_file"
-    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-    grep '^address=/' | \
-    sed 's/^address=\///' | \
-    sed 's/\/[0-9.]*$//' | \
-    while read -r domain; do
-        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-            printf "    local-zone: \"%s.\" always_null\n" "$domain"
-        fi
-    done >> "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^address=\// {
+            domain = $0
+            sub(/^address=\//, "", domain)
+            sub(/\/[0-9.]*$/, "", domain)
+            if (domain != "") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: DNSMasq conversion failed"
@@ -408,14 +426,17 @@ convert_domains_to_unbound() {
     log "Converting plain domains to Unbound format for $list_name..."
     
     write_unbound_header "$output_file"
-    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-    grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
-    while read -r domain; do
-        domain=$(echo "$domain" | xargs)
-        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-            printf "    local-zone: \"%s.\" always_null\n" "$domain"
-        fi
-    done >> "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ { next }
+        {
+            domain = $1
+            if (domain != "") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Domains conversion failed"
@@ -447,7 +468,7 @@ validate_file() {
     fi
     log "✓ File is not HTML"
     
-    local temp_converted="/tmp/${list_name}_converted.conf"
+    local temp_converted="${TMP_DIR}/${list_name}_converted.conf"
     if ! detect_format_and_convert "$file" "$temp_converted" "$list_name"; then
         log "ERROR: Format detection/conversion failed for $list_name"
         return 1
@@ -512,6 +533,7 @@ restart_unbound() {
     
     log "Restarting Unbound..."
     
+    # Directly restart unbound (works on Firewalla; alternative: firerouter_dns)
     if ! sudo systemctl restart unbound; then
         log "ERROR: Unbound failed to restart! Restoring all backups..."
         
@@ -569,7 +591,7 @@ verify_unbound() {
     
     log "Checking Unbound logs for errors..."
     local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -ciE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" || echo "0")
-    # Remove any whitespace or newlines that might cause issues
+    # Remove any whitespace/newlines
     error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')
     if [[ "$error_count" -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
@@ -580,7 +602,7 @@ verify_unbound() {
         done
     fi
     
-    # List all blocklist files and their entry counts (no include check needed)
+    # List all blocklist files and their entry counts
     for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
         if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
             local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
@@ -758,7 +780,7 @@ process_list() {
     local list_name="$1"
     local url="$2"
     local output_file="$3"
-    local temp_file="/tmp/${list_name}_tmp.conf"
+    local temp_file="${TMP_DIR}/${list_name}_tmp.conf"
     
     log "=========================================="
     log "Processing list: $list_name"
@@ -885,7 +907,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.5"
+                echo "Firewalla Unbound Blocklist Update Script v2.6"
                 exit 0
                 ;;
             *)
@@ -912,7 +934,6 @@ main() {
     if [[ $EUID -ne 0 ]]; then
         log "Note: Not running as root. Some operations require sudo."
         log "  The script will use sudo for:"
-        log "  - Installing curl (if needed)"
         log "  - Restarting Unbound"
     fi
     
