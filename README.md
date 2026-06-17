@@ -39,7 +39,7 @@ The script can automatically detect and convert the following formats to Unbound
 | RPZ | `example.com. CNAME .` | Converts to `local-zone` |
 | Wildcard | `*.example.com` | Blocks entire domain and all subdomains |
 | Hosts File | `0.0.0.0 example.com` or `127.0.0.1 example.com` | Extracts domain names |
-| Adblock | `||example.com^` | Used by uBlock Origin, Pi-hole, AdGuard |
+| Adblock | "`||example.com^`" | Used by uBlock Origin, Pi-hole, AdGuard |
 | DNSMasq | `address=/example.com/0.0.0.0` | Used by some router firmwares |
 | Plain Domains | `example.com` | One domain per line |
 
