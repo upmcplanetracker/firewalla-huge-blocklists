@@ -6,7 +6,7 @@
 # Description: Downloads and validates Unbound-formatted blocklists with
 #              safety checks, logging, and automatic rollback on failure.
 #              Supports multiple blocklists via .env configuration file.
-#              Automatically converts RPZ format to Unbound format.
+#              AUTO-DETECTS and converts various list formats to Unbound format.
 # =============================================================================
 
 set -euo pipefail
@@ -80,6 +80,64 @@ check_curl_installed() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Log Rotation Setup
+# -----------------------------------------------------------------------------
+setup_log_rotation() {
+    local log_file="$1"
+    local rotate_config="/etc/logrotate.d/unbound_update"
+    
+    log "Checking log rotation configuration..."
+    
+    # Check if log rotation is already configured
+    if [[ -f "$rotate_config" ]]; then
+        log "✓ Log rotation already configured at $rotate_config"
+        return 0
+    fi
+    
+    log "Setting up log rotation for $log_file..."
+    
+    # Create logrotate config file (protect against failures)
+    if sudo tee "$rotate_config" > /dev/null << EOF 2>/dev/null
+# Log rotation for Firewalla Unbound update script
+# Configured by update_dns.sh on $(date)
+
+$log_file {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    create 0640 pi pi
+    postrotate
+        # No need to restart anything as logs are just files
+        true
+    endscript
+}
+EOF
+    then
+        log "✓ Log rotation configured successfully"
+        log "  - Log file: $log_file"
+        log "  - Rotated daily"
+        log "  - Keep 7 days of logs"
+        log "  - Compressed old logs"
+        
+        # Test the configuration (ignore failure)
+        if sudo logrotate -f "$rotate_config" 2>/dev/null; then
+            log "✓ Log rotation test passed"
+        else
+            log "WARNING: Log rotation test failed, but config was created"
+        fi
+    else
+        log "WARNING: Failed to set up log rotation (permission issue)"
+        log "  You can manually configure it by creating: $rotate_config"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Download functions
+# -----------------------------------------------------------------------------
+
 download_with_retry() {
     local url="$1"
     local output_file="$2"
@@ -113,30 +171,82 @@ download_with_retry() {
 }
 
 # -----------------------------------------------------------------------------
-# New function: Convert RPZ format to Unbound format
+# Format detection and conversion
 # -----------------------------------------------------------------------------
+detect_format_and_convert() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Analyzing format for $list_name..."
+    
+    # Check if already Unbound format
+    if grep -q "local-zone:" "$input_file"; then
+        log "✓ Already in Unbound format"
+        return 0
+    fi
+    
+    # Check for RPZ format (contains "CNAME ." in first 50 lines)
+    if head -50 "$input_file" | grep -q "CNAME \."; then
+        log "Detected RPZ format - converting..."
+        return convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    # Check for Wildcard format (lines like "*.example.com")
+    if head -50 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
+        log "Detected Wildcard format - converting..."
+        return convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    # Check for Hosts format (lines with IP address followed by domain)
+    if head -50 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
+        log "Detected Hosts file format - converting..."
+        return convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    # Check for Adblock format (lines like "||example.com^")
+    if head -50 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
+        log "Detected Adblock format - converting..."
+        return convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    # Check for DNSMasq format (lines like "address=/example.com/0.0.0.0")
+    if head -50 "$input_file" | grep -qE "^address=/"; then
+        log "Detected DNSMasq format - converting..."
+        return convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    # Check for plain domains (one domain per line, no special characters)
+    if head -20 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
+        log "Detected plain domains format - converting..."
+        return convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
+    fi
+    
+    log "ERROR: Unable to detect format for $list_name"
+    log "  Please ensure the file is in one of these formats:"
+    log "  - Unbound (local-zone:)"
+    log "  - RPZ (CNAME .)"
+    log "  - Wildcard (*.domain.com)"
+    log "  - Hosts (0.0.0.0 domain.com)"
+    log "  - Adblock (||domain.com^)"
+    log "  - DNSMasq (address=/domain.com/0.0.0.0)"
+    log "  - Plain domains (domain.com)"
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Individual format converters
+# -----------------------------------------------------------------------------
+
 convert_rpz_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
     
-    log "Attempting to convert RPZ format to Unbound format for $list_name..."
+    log "Converting RPZ to Unbound format for $list_name..."
     
-    # Check if the file looks like RPZ (contains "CNAME ." or lines without "local-zone:")
-    if grep -q "local-zone:" "$input_file"; then
-        log "File already contains Unbound format, no conversion needed"
-        return 0
-    fi
-    
-    # Build the conversion: add "server:" header, then convert each domain line
     {
         echo "server:"
-        # Use awk to parse RPZ format:
-        # - skip empty lines, comments (starting with ; or #)
-        # - skip lines starting with $ (SOA)
-        # - skip lines that start with * (wildcard)
-        # - extract first field as domain, remove trailing dot
-        # - output "    local-zone: \"%s.\" always_null"
         awk '
             /^[[:space:]]*$/ { next }
             /^[[:space:]]*[;#]/ { next }
@@ -144,9 +254,7 @@ convert_rpz_to_unbound() {
             /^\*\./ { next }
             {
                 domain = $1
-                # Remove trailing dot if present
                 sub(/\.$/, "", domain)
-                # Skip if domain is "NS" or "SOA" or empty
                 if (domain != "" && domain != "NS" && domain != "SOA") {
                     printf "    local-zone: \"%s.\" always_null\n", domain
                 }
@@ -154,15 +262,161 @@ convert_rpz_to_unbound() {
         ' "$input_file"
     } > "$output_file"
     
-    # Safety: check that output file has content and contains local-zone
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
-        log "ERROR: Conversion failed - output is empty or invalid"
+        log "ERROR: RPZ conversion failed"
         return 1
     fi
     
-    log "✓ Conversion to Unbound format successful"
+    log "✓ RPZ conversion successful"
     return 0
 }
+
+convert_wildcard_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting Wildcard to Unbound format for $list_name..."
+    
+    {
+        echo "server:"
+        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+        sed 's/^\*\.//' | \
+        awk '{printf "    local-zone: \"%s.\" always_null\n", $1}'
+    } > "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: Wildcard conversion failed"
+        return 1
+    fi
+    
+    log "✓ Wildcard conversion successful"
+    return 0
+}
+
+convert_hosts_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting Hosts format to Unbound for $list_name..."
+    
+    {
+        echo "server:"
+        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+' | \
+        awk '{print $2}' | \
+        while read -r domain; do
+            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+                printf "    local-zone: \"%s.\" always_null\n" "$domain"
+            fi
+        done
+    } > "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: Hosts conversion failed"
+        return 1
+    fi
+    
+    log "✓ Hosts conversion successful"
+    return 0
+}
+
+convert_adblock_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting Adblock format to Unbound for $list_name..."
+    
+    {
+        echo "server:"
+        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+        grep '^||' | \
+        sed 's/^||//' | \
+        sed 's/\^$//' | \
+        while read -r domain; do
+            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+                # Check if it's a wildcard domain
+                if [[ "$domain" == *"*"* ]]; then
+                    domain=$(echo "$domain" | sed 's/\*\.//')
+                    printf "    local-zone: \"%s.\" always_null\n" "$domain"
+                else
+                    printf "    local-zone: \"%s.\" always_null\n" "$domain"
+                fi
+            fi
+        done
+    } > "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: Adblock conversion failed"
+        return 1
+    fi
+    
+    log "✓ Adblock conversion successful"
+    return 0
+}
+
+convert_dnsmasq_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting DNSMasq format to Unbound for $list_name..."
+    
+    {
+        echo "server:"
+        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+        grep '^address=/' | \
+        sed 's/^address=\///' | \
+        sed 's/\/[0-9.]*$//' | \
+        while read -r domain; do
+            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+                printf "    local-zone: \"%s.\" always_null\n" "$domain"
+            fi
+        done
+    } > "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: DNSMasq conversion failed"
+        return 1
+    fi
+    
+    log "✓ DNSMasq conversion successful"
+    return 0
+}
+
+convert_domains_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting plain domains to Unbound format for $list_name..."
+    
+    {
+        echo "server:"
+        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+        grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
+        while read -r domain; do
+            # Remove leading/trailing whitespace
+            domain=$(echo "$domain" | xargs)
+            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+                printf "    local-zone: \"%s.\" always_null\n" "$domain"
+            fi
+        done
+    } > "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: Domains conversion failed"
+        return 1
+    fi
+    
+    log "✓ Plain domains conversion successful"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Validation and update functions
 # -----------------------------------------------------------------------------
 
 validate_file() {
@@ -185,25 +439,24 @@ validate_file() {
     fi
     log "✓ File is not HTML"
     
-    # Check 3: Contains Unbound format
-    if ! grep -q "local-zone:" "$file"; then
-        log "WARNING: File does not contain 'local-zone:' entries for $list_name"
-        log "  Attempting to convert from RPZ format..."
-        local temp_converted="/tmp/${list_name}_converted.conf"
-        if convert_rpz_to_unbound "$file" "$temp_converted" "$list_name"; then
-            mv "$temp_converted" "$file"
-            log "✓ Conversion successful, using converted file"
-        else
-            log "ERROR: Conversion failed. File may be in an unsupported format."
-            return 1
-        fi
+    # Check 3: Detect format and convert if needed
+    local temp_converted="/tmp/${list_name}_converted.conf"
+    if ! detect_format_and_convert "$file" "$temp_converted" "$list_name"; then
+        log "ERROR: Format detection/conversion failed for $list_name"
+        return 1
     fi
-    log "✓ File contains Unbound format entries"
+    
+    # Move converted file to original location if conversion happened
+    if [[ -f "$temp_converted" ]]; then
+        mv "$temp_converted" "$file"
+        log "✓ Applied converted format"
+    fi
     
     # Check 4: Validate line count is reasonable (at least 100 entries)
     local line_count=$(grep -c "local-zone:" "$file" || echo "0")
     if [[ $line_count -lt 100 ]]; then
         log "ERROR: Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
+        log "  This might be a corrupted download or unsupported format"
         return 1
     fi
     log "✓ File contains $line_count entries"
@@ -237,13 +490,18 @@ apply_update() {
         log "Created backup: ${target_file}.backup"
     fi
     
-    # Move new config into place
-    mv "$source_file" "$target_file"
-    log "Installed new configuration: $target_file"
+    # Move new config into place (protected)
+    if mv "$source_file" "$target_file" 2>/dev/null; then
+        log "Installed new configuration: $target_file"
+    else
+        log "ERROR: Failed to move $source_file to $target_file"
+        return 1
+    fi
     
     # Fix ownership of the config file
     chown pi:pi "$target_file" 2>/dev/null || true
     log "Fixed ownership for $target_file"
+    return 0
 }
 
 restart_unbound() {
@@ -257,7 +515,6 @@ restart_unbound() {
     if ! sudo systemctl restart unbound; then
         log "ERROR: Unbound failed to restart! Restoring all backups..."
         
-        # Restore all backed up configs
         find /home/pi/.firewalla/config/unbound_local/ -name "*.backup" -type f | while read -r backup; do
             local original="${backup%.backup}"
             mv "$backup" "$original"
@@ -312,12 +569,13 @@ verify_unbound() {
     fi
     
     log "Checking Unbound logs for errors..."
-    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | wc -l)
-        if [[ $error_count -eq 0 ]]; then
+    # Use || true to prevent script exit if journalctl fails
+    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | wc -l || echo "0")
+    if [[ $error_count -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
     else
         log "WARNING: Found $error_count errors in Unbound logs"
-        sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | head -5 | while read -r line; do
+        sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | head -5 | while read -r line; do
             log "  - $line"
         done
     fi
@@ -414,27 +672,46 @@ create_env_template() {
 # To remove a list: Comment it out with # at the start of the line
 # To disable temporarily: Add # at the start of the line
 # =============================================================================
+# 
+# SUPPORTED FORMATS (auto-detected):
+# - Unbound native (local-zone:)
+# - RPZ (CNAME .)
+# - Wildcard (*.domain.com)
+# - Hosts (0.0.0.0 domain.com)
+# - Adblock (||domain.com^)
+# - DNSMasq (address=/domain.com/0.0.0.0)
+# - Plain domains (domain.com)
+# =============================================================================
 
-# OISD Big List (Recommended for High tier hardware)
+# OISD Big List (Unbound format)
 oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf
 
-# OISD Light List (Recommended for Entry tier hardware)
+# OISD Light List (Unbound format)
 # oisd_light|https://oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_light.conf
 
-# HaGeZi Pro List (Unbound format)
+# HaGeZi Pro List - Unbound format
 # hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
 
-# HaGeZi Ultimate List (Unbound format)
+# HaGeZi Ultimate - Unbound format
 # hagezi_ultimate|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt|/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf
 
-# HaGeZi TIF (RPZ format - will be converted automatically)
+# HaGeZi TIF - RPZ format (auto-converts)
 # hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
 
-# HaGeZi DoH (RPZ format - will be converted automatically)
+# HaGeZi DoH - RPZ format (auto-converts)
 # hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
 
+# HaGeZi TIF - Wildcard format (auto-converts)
+# hagezi_tif_wildcard|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif_wildcard.conf
+
+# Steven Black's Hosts File (hosts format - auto-converts)
+# stevenblack|https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|/home/pi/.firewalla/config/unbound_local/stevenblack.conf
+
+# EasyList Adblock Format (auto-converts)
+# easylist|https://easylist.to/easylist/easylist.txt|/home/pi/.firewalla/config/unbound_local/easylist.conf
+
 # Custom lists can be added here
-# custom_list|https://example.com/unbound-list.txt|/home/pi/.firewalla/config/unbound_local/custom.conf
+# custom_list|https://example.com/blocklist.txt|/home/pi/.firewalla/config/unbound_local/custom.conf
 EOF
     
     chown pi:pi "$ENV_FILE" 2>/dev/null || true
@@ -457,27 +734,26 @@ process_list() {
     log "Processing list: $list_name"
     log "=========================================="
     
-    # Download
     if ! download_with_retry "$url" "$temp_file" "$list_name"; then
         log "✗ Failed to download $list_name - skipping"
         return 1
     fi
     
-    # Validate and optionally convert
     if ! validate_file "$temp_file" "$list_name"; then
         log "✗ Validation/conversion failed for $list_name - skipping"
         rm -f "$temp_file"
         return 1
     fi
     
-    # Get old block count for reporting
     old_count=$(get_block_count "$output_file")
     log "Old block count for $list_name: $old_count"
     
-    # Apply update
-    apply_update "$temp_file" "$output_file" "$list_name"
+    if ! apply_update "$temp_file" "$output_file" "$list_name"; then
+        log "✗ Failed to apply update for $list_name - skipping"
+        rm -f "$temp_file"
+        return 1
+    fi
     
-    # Report new block count
     if [[ "$DRY_RUN" != "true" ]]; then
         new_count=$(get_block_count "$output_file")
         log "New block count for $list_name: $new_count"
@@ -498,7 +774,6 @@ process_list() {
         log "DRY RUN: Would have reported block count changes"
     fi
     
-    # Clean up temp file
     if [[ -f "$temp_file" ]]; then
         rm -f "$temp_file"
         log "Cleaned up temporary file for $list_name"
@@ -518,6 +793,21 @@ Options:
   -q, --quiet       Quiet mode (minimal output, only log to file)
   -e, --env FILE    Use specified .env file instead of default
   -v, --version     Show version information
+
+Supported Formats (auto-detected):
+  - Unbound native (local-zone:)
+  - RPZ (CNAME .)
+  - Wildcard (*.domain.com)
+  - Hosts (0.0.0.0 domain.com)
+  - Adblock (||domain.com^)
+  - DNSMasq (address=/domain.com/0.0.0.0)
+  - Plain domains (domain.com)
+
+Log Rotation:
+  - The script automatically configures log rotation
+  - Logs are rotated daily
+  - 7 days of logs are kept
+  - Old logs are compressed
 
 Examples:
   $0                 Run normally
@@ -560,7 +850,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.2"
+                echo "Firewalla Unbound Blocklist Update Script v2.3"
                 exit 0
                 ;;
             *)
@@ -590,6 +880,9 @@ main() {
         log "  - Installing curl (if needed)"
         log "  - Restarting Unbound"
     fi
+    
+    # Setup log rotation
+    setup_log_rotation "$LOG_FILE"
     
     create_env_template
     
