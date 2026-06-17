@@ -7,6 +7,8 @@
 #              safety checks, logging, and automatic rollback on failure.
 #              Supports multiple blocklists via .env configuration file.
 #              AUTO-DETECTS and converts various list formats to Unbound format.
+#              Automatically removes blocklists that are no longer enabled.
+#              Cleans up old "include:" lines from Unbound config.
 # =============================================================================
 
 set -euo pipefail
@@ -15,7 +17,6 @@ set -euo pipefail
 # Configuration
 # =============================================================================
 
-# Default configuration file (can be overridden)
 ENV_FILE="${ENV_FILE:-/home/pi/.firewalla/config/blocklists.env}"
 LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
@@ -23,6 +24,8 @@ RETRY_DELAY="${RETRY_DELAY:-5}"
 DRY_RUN="${DRY_RUN:-false}"
 QUIET="${QUIET:-false}"
 MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # MB
+UNBOUND_LOCAL_DIR="/home/pi/.firewalla/config/unbound_local"
+UNBOUND_CUSTOM_CONF="${UNBOUND_LOCAL_DIR}/unbound_custom.conf"
 
 # =============================================================================
 # Functions
@@ -81,6 +84,41 @@ check_curl_installed() {
 }
 
 # -----------------------------------------------------------------------------
+# Cleanup old "include:" lines from Unbound config
+# -----------------------------------------------------------------------------
+cleanup_unbound_includes() {
+    if [[ ! -f "$UNBOUND_CUSTOM_CONF" ]]; then
+        log "ℹ Unbound custom config not found, skipping include cleanup."
+        return 0
+    fi
+
+    log "Checking for old 'include:' lines pointing to $UNBOUND_LOCAL_DIR..."
+
+    # Check if any include lines exist that point to our directory
+    if ! grep -q "^include:.*$UNBOUND_LOCAL_DIR" "$UNBOUND_CUSTOM_CONF"; then
+        log "✓ No redundant include lines found."
+        return 0
+    fi
+
+    log "Found redundant include lines. Creating backup..."
+    local backup_file="${UNBOUND_CUSTOM_CONF}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$UNBOUND_CUSTOM_CONF" "$backup_file"
+    log "Backup created: $backup_file"
+
+    # Remove lines that start with "include:" and contain the unbound_local path
+    # Use sed to delete matching lines
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: Would remove include lines from $UNBOUND_CUSTOM_CONF"
+        grep "^include:.*$UNBOUND_LOCAL_DIR" "$UNBOUND_CUSTOM_CONF" | while read -r line; do
+            log "  Would remove: $line"
+        done
+    else
+        sudo sed -i "\|^include:.*$UNBOUND_LOCAL_DIR|d" "$UNBOUND_CUSTOM_CONF"
+        log "✓ Removed redundant include lines from $UNBOUND_CUSTOM_CONF"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Log Rotation Setup
 # -----------------------------------------------------------------------------
 setup_log_rotation() {
@@ -89,7 +127,6 @@ setup_log_rotation() {
     
     log "Checking log rotation configuration..."
     
-    # Check if log rotation is already configured
     if [[ -f "$rotate_config" ]]; then
         log "✓ Log rotation already configured at $rotate_config"
         return 0
@@ -97,7 +134,6 @@ setup_log_rotation() {
     
     log "Setting up log rotation for $log_file..."
     
-    # Create logrotate config file (protect against failures)
     if sudo tee "$rotate_config" > /dev/null << EOF 2>/dev/null
 # Log rotation for Firewalla Unbound update script
 # Configured by update_dns.sh on $(date)
@@ -110,7 +146,6 @@ $log_file {
     notifempty
     create 0640 pi pi
     postrotate
-        # No need to restart anything as logs are just files
         true
     endscript
 }
@@ -122,7 +157,6 @@ EOF
         log "  - Keep 7 days of logs"
         log "  - Compressed old logs"
         
-        # Test the configuration (ignore failure)
         if sudo logrotate -f "$rotate_config" 2>/dev/null; then
             log "✓ Log rotation test passed"
         else
@@ -180,63 +214,58 @@ detect_format_and_convert() {
     
     log "Analyzing format for $list_name..."
     
-    # Check if already Unbound format
     if grep -q "local-zone:" "$input_file"; then
         log "✓ Already in Unbound format"
         return 0
     fi
     
-    # Check for RPZ format (contains "CNAME ." in first 50 lines)
     if head -50 "$input_file" | grep -q "CNAME \."; then
         log "Detected RPZ format - converting..."
         return convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
-    # Check for Wildcard format (lines like "*.example.com")
     if head -50 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
         log "Detected Wildcard format - converting..."
         return convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
-    # Check for Hosts format (lines with IP address followed by domain)
     if head -50 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
         log "Detected Hosts file format - converting..."
         return convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
-    # Check for Adblock format (lines like "||example.com^")
     if head -50 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
         log "Detected Adblock format - converting..."
         return convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
-    # Check for DNSMasq format (lines like "address=/example.com/0.0.0.0")
     if head -50 "$input_file" | grep -qE "^address=/"; then
         log "Detected DNSMasq format - converting..."
         return convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
-    # Check for plain domains (one domain per line, no special characters)
     if head -20 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
         log "Detected plain domains format - converting..."
         return convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
     fi
     
     log "ERROR: Unable to detect format for $list_name"
-    log "  Please ensure the file is in one of these formats:"
-    log "  - Unbound (local-zone:)"
-    log "  - RPZ (CNAME .)"
-    log "  - Wildcard (*.domain.com)"
-    log "  - Hosts (0.0.0.0 domain.com)"
-    log "  - Adblock (||domain.com^)"
-    log "  - DNSMasq (address=/domain.com/0.0.0.0)"
-    log "  - Plain domains (domain.com)"
+    log "  Supported formats: Unbound, RPZ, Wildcard, Hosts, Adblock, DNSMasq, Plain domains"
     return 1
 }
 
 # -----------------------------------------------------------------------------
-# Individual format converters
+# Individual format converters - all now include the generated marker comment
 # -----------------------------------------------------------------------------
+
+# Helper to write the header with marker comment
+write_unbound_header() {
+    local output_file="$1"
+    {
+        echo "# Generated by update_dns.sh - DO NOT EDIT MANUALLY"
+        echo "server:"
+    } > "$output_file"
+}
 
 convert_rpz_to_unbound() {
     local input_file="$1"
@@ -245,28 +274,25 @@ convert_rpz_to_unbound() {
     
     log "Converting RPZ to Unbound format for $list_name..."
     
-    {
-        echo "server:"
-        awk '
-            /^[[:space:]]*$/ { next }
-            /^[[:space:]]*[;#]/ { next }
-            /^\$/ { next }
-            /^\*\./ { next }
-            {
-                domain = $1
-                sub(/\.$/, "", domain)
-                if (domain != "" && domain != "NS" && domain != "SOA") {
-                    printf "    local-zone: \"%s.\" always_null\n", domain
-                }
+    write_unbound_header "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^\$/ { next }
+        /^\*\./ { next }
+        {
+            domain = $1
+            sub(/\.$/, "", domain)
+            if (domain != "" && domain != "NS" && domain != "SOA") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
             }
-        ' "$input_file"
-    } > "$output_file"
+        }
+    ' "$input_file" >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: RPZ conversion failed"
         return 1
     fi
-    
     log "✓ RPZ conversion successful"
     return 0
 }
@@ -278,18 +304,15 @@ convert_wildcard_to_unbound() {
     
     log "Converting Wildcard to Unbound format for $list_name..."
     
-    {
-        echo "server:"
-        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-        sed 's/^\*\.//' | \
-        awk '{printf "    local-zone: \"%s.\" always_null\n", $1}'
-    } > "$output_file"
+    write_unbound_header "$output_file"
+    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+    sed 's/^\*\.//' | \
+    awk '{printf "    local-zone: \"%s.\" always_null\n", $1}' >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Wildcard conversion failed"
         return 1
     fi
-    
     log "✓ Wildcard conversion successful"
     return 0
 }
@@ -301,23 +324,20 @@ convert_hosts_to_unbound() {
     
     log "Converting Hosts format to Unbound for $list_name..."
     
-    {
-        echo "server:"
-        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+' | \
-        awk '{print $2}' | \
-        while read -r domain; do
-            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-                printf "    local-zone: \"%s.\" always_null\n" "$domain"
-            fi
-        done
-    } > "$output_file"
+    write_unbound_header "$output_file"
+    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+    grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+' | \
+    awk '{print $2}' | \
+    while read -r domain; do
+        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+            printf "    local-zone: \"%s.\" always_null\n" "$domain"
+        fi
+    done >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Hosts conversion failed"
         return 1
     fi
-    
     log "✓ Hosts conversion successful"
     return 0
 }
@@ -329,30 +349,24 @@ convert_adblock_to_unbound() {
     
     log "Converting Adblock format to Unbound for $list_name..."
     
-    {
-        echo "server:"
-        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-        grep '^||' | \
-        sed 's/^||//' | \
-        sed 's/\^$//' | \
-        while read -r domain; do
-            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-                # Check if it's a wildcard domain
-                if [[ "$domain" == *"*"* ]]; then
-                    domain=$(echo "$domain" | sed 's/\*\.//')
-                    printf "    local-zone: \"%s.\" always_null\n" "$domain"
-                else
-                    printf "    local-zone: \"%s.\" always_null\n" "$domain"
-                fi
+    write_unbound_header "$output_file"
+    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+    grep '^||' | \
+    sed 's/^||//' | \
+    sed 's/\^$//' | \
+    while read -r domain; do
+        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+            if [[ "$domain" == *"*"* ]]; then
+                domain=$(echo "$domain" | sed 's/\*\.//')
             fi
-        done
-    } > "$output_file"
+            printf "    local-zone: \"%s.\" always_null\n" "$domain"
+        fi
+    done >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Adblock conversion failed"
         return 1
     fi
-    
     log "✓ Adblock conversion successful"
     return 0
 }
@@ -364,24 +378,21 @@ convert_dnsmasq_to_unbound() {
     
     log "Converting DNSMasq format to Unbound for $list_name..."
     
-    {
-        echo "server:"
-        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-        grep '^address=/' | \
-        sed 's/^address=\///' | \
-        sed 's/\/[0-9.]*$//' | \
-        while read -r domain; do
-            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-                printf "    local-zone: \"%s.\" always_null\n" "$domain"
-            fi
-        done
-    } > "$output_file"
+    write_unbound_header "$output_file"
+    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+    grep '^address=/' | \
+    sed 's/^address=\///' | \
+    sed 's/\/[0-9.]*$//' | \
+    while read -r domain; do
+        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+            printf "    local-zone: \"%s.\" always_null\n" "$domain"
+        fi
+    done >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: DNSMasq conversion failed"
         return 1
     fi
-    
     log "✓ DNSMasq conversion successful"
     return 0
 }
@@ -393,24 +404,20 @@ convert_domains_to_unbound() {
     
     log "Converting plain domains to Unbound format for $list_name..."
     
-    {
-        echo "server:"
-        grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
-        grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
-        while read -r domain; do
-            # Remove leading/trailing whitespace
-            domain=$(echo "$domain" | xargs)
-            if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
-                printf "    local-zone: \"%s.\" always_null\n" "$domain"
-            fi
-        done
-    } > "$output_file"
+    write_unbound_header "$output_file"
+    grep -vE '^[[:space:]]*$|^[[:space:]]*[;#]' "$input_file" | \
+    grep -vE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
+    while read -r domain; do
+        domain=$(echo "$domain" | xargs)
+        if [[ -n "$domain" && ! "$domain" =~ ^# ]]; then
+            printf "    local-zone: \"%s.\" always_null\n" "$domain"
+        fi
+    done >> "$output_file"
     
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Domains conversion failed"
         return 1
     fi
-    
     log "✓ Plain domains conversion successful"
     return 0
 }
@@ -425,45 +432,38 @@ validate_file() {
     
     log "Starting validation for $list_name..."
     
-    # Check 1: File is not empty
     if [[ ! -s "$file" ]]; then
         log "ERROR: Downloaded file is empty for $list_name"
         return 1
     fi
     log "✓ File is not empty"
     
-    # Check 2: Not HTML
     if grep -qiE "<html|<head|<body|<!DOCTYPE" "$file"; then
         log "ERROR: Downloaded HTML instead of blocklist for $list_name"
         return 1
     fi
     log "✓ File is not HTML"
     
-    # Check 3: Detect format and convert if needed
     local temp_converted="/tmp/${list_name}_converted.conf"
     if ! detect_format_and_convert "$file" "$temp_converted" "$list_name"; then
         log "ERROR: Format detection/conversion failed for $list_name"
         return 1
     fi
     
-    # Move converted file to original location if conversion happened
     if [[ -f "$temp_converted" ]]; then
         mv "$temp_converted" "$file"
         log "✓ Applied converted format"
     fi
     
-    # Check 4: Validate line count is reasonable (at least 100 entries)
     local line_count=$(grep -c "local-zone:" "$file" || echo "0")
     if [[ $line_count -lt 100 ]]; then
         log "ERROR: Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
-        log "  This might be a corrupted download or unsupported format"
         return 1
     fi
     log "✓ File contains $line_count entries"
     
-    # Check 5: Look for common syntax errors
     if grep -E "local-zone:[[:space:]]*$" "$file" | grep -q .; then
-        log "ERROR: Found empty domain entries for $list_name (missing domain name after local-zone:)"
+        log "ERROR: Found empty domain entries for $list_name"
         return 1
     fi
     log "✓ No empty domain entries found"
@@ -484,13 +484,11 @@ apply_update() {
     
     log "Applying update for $list_name..."
     
-    # Create backup of current config if it exists
     if [[ -f "$target_file" ]]; then
         cp "$target_file" "${target_file}.backup"
         log "Created backup: ${target_file}.backup"
     fi
     
-    # Move new config into place (protected)
     if mv "$source_file" "$target_file" 2>/dev/null; then
         log "Installed new configuration: $target_file"
     else
@@ -498,7 +496,6 @@ apply_update() {
         return 1
     fi
     
-    # Fix ownership of the config file
     chown pi:pi "$target_file" 2>/dev/null || true
     log "Fixed ownership for $target_file"
     return 0
@@ -515,7 +512,7 @@ restart_unbound() {
     if ! sudo systemctl restart unbound; then
         log "ERROR: Unbound failed to restart! Restoring all backups..."
         
-        find /home/pi/.firewalla/config/unbound_local/ -name "*.backup" -type f | while read -r backup; do
+        find "$UNBOUND_LOCAL_DIR" -name "*.backup" -type f | while read -r backup; do
             local original="${backup%.backup}"
             mv "$backup" "$original"
             log "Restored $original from backup"
@@ -527,7 +524,6 @@ restart_unbound() {
         else
             error_exit "FATAL: Unbound failed to restart even with backup configs!"
         fi
-        
         return 1
     fi
     
@@ -569,7 +565,6 @@ verify_unbound() {
     fi
     
     log "Checking Unbound logs for errors..."
-    # Use || true to prevent script exit if journalctl fails
     local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | wc -l || echo "0")
     if [[ $error_count -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
@@ -580,16 +575,8 @@ verify_unbound() {
         done
     fi
     
-    local unbound_conf="/home/pi/.firewalla/config/unbound_local/unbound_custom.conf"
-    if [[ -f "$unbound_conf" ]]; then
-        if grep -q "include:.*\.conf" "$unbound_conf"; then
-            log "✓ Blocklist includes found in Unbound config"
-        else
-            log "WARNING: No blocklist includes found in Unbound config!"
-        fi
-    fi
-    
-    for conf_file in /home/pi/.firewalla/config/unbound_local/*.conf; do
+    # List all blocklist files and their entry counts (no include check needed)
+    for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
         if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
             local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
             if [[ $block_count -gt 0 ]]; then
@@ -611,11 +598,51 @@ get_block_count() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Cleanup old blocklists that are no longer in the .env
+# -----------------------------------------------------------------------------
+cleanup_old_lists() {
+    local -n expected_files="$1"
+    log "Checking for obsolete blocklist files..."
+
+    declare -A expected_basenames
+    for file in "${expected_files[@]}"; do
+        expected_basenames["$(basename "$file")"]=1
+    done
+
+    local keep_files=("unbound_custom.conf" "unbound_local.conf")
+
+    for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
+        local basename=$(basename "$conf_file")
+        for keep in "${keep_files[@]}"; do
+            if [[ "$basename" == "$keep" ]]; then
+                continue 2
+            fi
+        done
+
+        if [[ -z "${expected_basenames[$basename]:-}" ]]; then
+            if head -1 "$conf_file" | grep -q "# Generated by update_dns.sh"; then
+                log "Removing obsolete blocklist: $basename (no longer in .env)"
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    log "DRY RUN: Would delete $conf_file"
+                else
+                    rm -f "$conf_file"
+                    log "✓ Removed $basename"
+                fi
+            else
+                log "ℹ Keeping $basename (not generated by this script)"
+            fi
+        fi
+    done
+}
+
 parse_env_file() {
     local env_file="$1"
     local -n list_array="$2"
+    local -n output_files="$3"
     
     list_array=()
+    output_files=()
     
     if [[ ! -f "$env_file" ]]; then
         log "WARNING: No env file found at $env_file"
@@ -638,6 +665,7 @@ parse_env_file() {
             
             if [[ -n "$name" && -n "$url" && -n "$output" ]]; then
                 list_array+=("$name|$url|$output")
+                output_files+=("$output")
                 log "  Loaded: $name -> $output"
             fi
         fi
@@ -809,6 +837,11 @@ Log Rotation:
   - 7 days of logs are kept
   - Old logs are compressed
 
+Cleanup:
+  - Blocklists that are commented out or removed from .env will be deleted
+  - Only files generated by this script are removed (others are kept)
+  - Redundant "include:" lines pointing to unbound_local are removed from unbound_custom.conf
+
 Examples:
   $0                 Run normally
   $0 --dry-run       Test without applying changes
@@ -850,7 +883,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.3"
+                echo "Firewalla Unbound Blocklist Update Script v2.4"
                 exit 0
                 ;;
             *)
@@ -881,17 +914,18 @@ main() {
         log "  - Restarting Unbound"
     fi
     
-    # Setup log rotation
-    setup_log_rotation "$LOG_FILE"
+    # Clean up old include lines (runs before anything else)
+    cleanup_unbound_includes
     
+    setup_log_rotation "$LOG_FILE"
     create_env_template
     
     declare -a BLOCKLISTS
-    if ! parse_env_file "$ENV_FILE" BLOCKLISTS; then
+    declare -a EXPECTED_OUTPUTS
+    if ! parse_env_file "$ENV_FILE" BLOCKLISTS EXPECTED_OUTPUTS; then
         log "WARNING: No valid lists found in .env file"
         log "  Please edit $ENV_FILE to add your blocklists"
         log "  Format: NAME|URL|OUTPUT_FILE"
-        log "  Example: oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf"
         error_exit "No blocklists configured"
     fi
     
@@ -908,8 +942,11 @@ main() {
         fi
     done
     
+    # Clean up old blocklists that are no longer in .env
+    cleanup_old_lists EXPECTED_OUTPUTS
+    
     if [[ ${#success_lists[@]} -gt 0 ]]; then
-        fix_ownership "/home/pi/.firewalla/config"
+        fix_ownership "$UNBOUND_LOCAL_DIR"
         
         if ! restart_unbound; then
             error_exit "Update failed during restart phase"
