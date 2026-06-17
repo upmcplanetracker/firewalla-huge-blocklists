@@ -6,9 +6,9 @@ This configuration allows you to manually add massive, unsupported (for MSP lite
 Files in this Repository
 ------------------------
 
-*   **`update_dns.sh`** - The main script that downloads, validates, and updates your blocklists.
-*   **`blocklists.env`** - Your personal configuration file to define which lists to use. **This file is never overwritten by the script after creation.**
-*   **`README.md`** - This guide.
+*   **`update_dns.sh`** – The main script that downloads, validates, and updates your blocklists. Auto-detects and converts multiple formats.
+*   **`blocklists.env`** – Your personal configuration file to define which lists to use. **This file is never overwritten by the script after creation.**
+*   **`README.md`** – This guide.
 
 * * *
 
@@ -25,18 +25,99 @@ Critical: Before You Begin
 
 ### 2\. Format & Compatibility
 
-*   **Requirement:** **Unbound formatted** lists are preferred, but the script is robust enough to detect multiple formats (RPZ, Wildcard, Hosts, Adblock, DNSMasq, Plain Domans) and convert them to Unbound format.
-*   **Warning:** While this script should be smart enough to reject standard IP only files, if they sneak through they **will break Unbound**. If this happens, delete the newly added block list and `sudo systemctl restart unbound` or turn the Unbound toggle off and back on again in the app.
+*   **Requirement:** You must use **Unbound-formatted** lists. The file must contain `local-zone:` entries.
+*   **Warning:** Standard "hosts" files (starting with `0.0.0.0` or `127.0.0.1`) **will break Unbound** if not converted. The script **automatically detects and converts** many common formats (see below).
+*   **IP-only lists are not supported** – Unbound requires domain names to block. The script will reject any list that doesn't contain valid domain names.
 
-### 3. Hardware Tiers & Memory
+### 3\. Supported Formats (Auto-Detected & Converted)
+
+The script can automatically detect and convert the following formats to Unbound's `local-zone` format:
+
+Format
+
+Example
+
+Notes
+
+**Unbound Native**
+
+`local-zone: "example.com." always_null`
+
+Already correct
+
+**RPZ**
+
+`example.com. CNAME .`
+
+Converts to `local-zone`
+
+**Wildcard**
+
+`*.example.com`
+
+Blocks entire domain and all subdomains
+
+**Hosts File**
+
+`0.0.0.0 example.com` or `127.0.0.1 example.com`
+
+Extracts domain names
+
+**Adblock**
+
+`||example.com^`
+
+Used by uBlock Origin, Pi-hole, AdGuard
+
+**DNSMasq**
+
+`address=/example.com/0.0.0.0`
+
+Used by some router firmwares
+
+**Plain Domains**
+
+`example.com`
+
+One domain per line
+
+If the script cannot detect the format, it will **skip** the list and continue with the next one, preventing Unbound from being broken.
+
+### 4\. Hardware Tiers & Memory
 
 Large lists (~400k+ domains) consume significant RAM. Match your list choice to your hardware:
 
-| Hardware Tier | Firewalla Models | Recommended Unbound Cache | Max Domain Recommendation |
-| :--- | :--- | :--- | :--- |
-| **Entry** | Purple SE, Blue Plus | 16m / 32m | **Avoid Big Lists** (Use Light only) |
-| **Mid** | Gold, Purple | 32m / 64m | Up to 100k domains |
-| **High** | Gold Plus, Gold Pro | 128m / 256m | 400k+ domains (Big/Ultimate) |
+Hardware Tier
+
+Firewalla Models
+
+Recommended Unbound Cache
+
+Max Domain Recommendation
+
+**Entry**
+
+Purple SE, Blue Plus
+
+16m / 32m
+
+**Avoid Big Lists** (Use Light only)
+
+**Mid**
+
+Gold, Purple
+
+32m / 64m
+
+Up to 100k domains
+
+**High**
+
+Gold Plus, Gold Pro
+
+128m / 256m
+
+400k+ domains (Big/Ultimate)
 
 * * *
 
@@ -75,7 +156,7 @@ Download the enhanced update script directly to your Firewalla:
 
 ### Step 3: Set Up Your Blocklists (.env file)
 
-The script uses a `.env` file to manage your blocklists. You have two options to set this up:
+The script uses a `.env` file to manage your blocklists. You have two options:
 
 #### Option A: Let the script create it (Easiest)
 
@@ -90,7 +171,7 @@ The script will show output like:
 
 **Important:** The script will **never overwrite** this file once it exists. Your edits are safe.
 
-#### Option B: Download the .env file directly (Recommended for advanced users)
+#### Option B: Download the .env file directly
 
 Download the pre-configured `blocklists.env` file from the repository:
 
@@ -105,7 +186,7 @@ Download the pre-configured `blocklists.env` file from the repository:
 
 Whether you used Option A or B, edit the file to enable the lists you want:
 
-    nano /home/pi/.firewalla/config/blocklists.env
+    sudo nano /home/pi/.firewalla/config/blocklists.env
 
 **.env file format:**
 
@@ -118,41 +199,47 @@ Each line defines one blocklist. To enable a list, remove the `#` at the start o
     # OISD Big List (Recommended for High tier hardware)
     oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf
     
-    # HaGeZi Pro List
+    # HaGeZi Pro List (auto-converts from Unbound format)
     hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
     
-    # HaGeZi Ultimate List (Large - requires High tier hardware)
-    # hagezi_ultimate|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt|/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf
+    # HaGeZi TIF (RPZ format - auto-converts)
+    hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
+    
+    # Steven Black's Hosts File (hosts format - auto-converts)
+    stevenblack|https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|/home/pi/.firewalla/config/unbound_local/stevenblack.conf
 
-**Note:** The .env file is a simple text file. Each uncommented line must have exactly three parts separated by the pipe character `|`.
+**Note:** The script automatically removes blocklist files that are no longer enabled in your `.env` file. If you comment out a list, its `.conf` file will be deleted on the next run.
 
 ### Step 4: Run the Script to Download Your Lists
 
-Now run the script again to download all the lists you enabled in the .env file:
+Now run the script again to download all the lists you enabled:
 
     sudo /home/pi/update_dns.sh
 
 The script will:
 
-1.  Read your .env file
+1.  Read your `.env` file
 2.  Download each enabled list
-3.  Validate each file (checks format, not HTML, etc.)
-4.  Install each list to the specified location
-5.  Create backups before replacing existing files
+3.  Auto-detect and convert the format (if needed)
+4.  Validate each file (checks for proper format, not HTML, etc.)
+5.  Install each list to the specified location
+6.  Create backups before replacing existing files
+7.  Remove any obsolete blocklist files no longer in `.env`
+8.  Clean up any old `include:` lines from your Unbound config
 
 **Verify the files were created:**
 
     ls -lh /home/pi/.firewalla/config/unbound_local/
 
-### Step 5: Configure Unbound
+### Step 5: Configure Unbound (Automatic!)
 
-Now point Unbound to your downloaded blocklist files. Edit your Unbound config:
+**Firewalla automatically includes all `.conf` files in the `unbound_local` directory.** You don't need to manually add `include:` lines for each blocklist. The script will also **automatically remove any old `include:` lines** from your `unbound_custom.conf` file that point to this directory.
 
-**File Path:** `/home/pi/.firewalla/config/unbound_local/unbound_custom.conf`
+If you need to customize Unbound settings (like cache size), edit:
 
-    nano /home/pi/.firewalla/config/unbound_local/unbound_custom.conf
+    sudo nano /home/pi/.firewalla/config/unbound_local/unbound_custom.conf
 
-Add or modify the following configuration:
+Example configuration:
 
     server:
         # Adjust these values based on your Hardware Tier from the table above
@@ -162,12 +249,14 @@ Add or modify the following configuration:
         prefetch: yes
         prefetch-key: yes
     
+        # Do NOT add include: lines for blocklists here!
+        # Firewalla loads all .conf files in unbound_local automatically.
+
 ### Step 6: Restart & Test
 
 Restart Unbound to apply the changes:
 
     sudo systemctl restart unbound
-    # or toggle the Firewalla app Unbound slider off and back on
 
 **Verify Unbound is running:**
 
@@ -181,7 +270,7 @@ The script can be scheduled to run automatically using cron. Here are several sc
 
 Update all lists every Sunday at midnight:
 
-    sudo crontab -e
+    crontab -e
 
 Add this line:
 
@@ -199,64 +288,48 @@ Update on Sunday, Wednesday, and Friday at midnight:
 
     0 0 * * 0,3,5 /home/pi/update_dns.sh
 
-#### Option 4: Different Schedules for Different Lists
+#### Option 4: Quiet Mode for Cron (Recommended)
 
-If you want different update frequencies for different lists, you can create separate .env files and scripts:
+To reduce log noise, use the `--quiet` flag:
 
-**Create a script for each schedule:**
+    0 0 * * 0 /home/pi/update_dns.sh --quiet
 
-    # /home/pi/update_weekly.sh
-    #!/bin/bash
-    ENV_FILE=/home/pi/.firewalla/config/blocklists_weekly.env /home/pi/update_dns.sh
-    
-    # /home/pi/update_monthly.sh
-    #!/bin/bash
-    ENV_FILE=/home/pi/.firewalla/config/blocklists_monthly.env /home/pi/update_dns.sh
+**Apply Changes:**
 
-Make them executable and add to crontab:
+To ensure the crontab is loaded and the network stack syncs correctly, reboot your Firewalla (will take 3-4 minutes for your internet to return):
 
-    chmod +x /home/pi/update_*.sh
-    sudo crontab -e
-
-Add:
-
-    0 0 * * 0 /home/pi/update_weekly.sh
-    0 0 1 * * /home/pi/update_monthly.sh
-
-#### Option 5: Manual Updates Only
-
-If you prefer to update manually, simply run:
-
-    sudo /home/pi/update_dns.sh
-
-Whenever you want to refresh your lists.
+    sudo reboot
 
 * * *
 
 Script Features
 ---------------
 
-The `update_dns.sh` script includes several safety features:
+The `update_dns.sh` script includes several safety and convenience features:
 
-📦 **Automatic curl installation** - Installs curl if not present
+### Core Features
 
-🔄 **Retry logic** - Retries download up to 3 times on failure
+*   **Automatic curl installation** – Installs curl if not present
+*   **Retry logic** – Retries download up to 3 times on failure
+*   **Multiple validation checks** – Validates file format, size, and content
+*   **Automatic rollback** – Restores previous config if update fails
+*   **Detailed logging** – Logs all activity to `/var/log/unbound_update.log`
+*   **Block count reporting** – Shows before/after domain counts for each list
+*   **Disk space check** – Warns if disk space is low (but doesn't fail)
+*   **Unbound verification** – Tests that Unbound restarts successfully
 
-✅ **Multiple validation checks** - Validates file format, size, and content
+### Format Support
 
-↩️ **Automatic rollback** - Restores previous config if update fails
+*   **Auto-detects and converts** 7 different formats to Unbound format
+*   **Skips unsupported formats** – Continues with next list if format is unknown
+*   **Prevents IP-only lists** – Rejects lists with only IP addresses (Unbound can't use them)
 
-📝 **Detailed logging** - Logs all activity to /var/log/unbound\_update.log
+### Cleanup & Maintenance
 
-📊 **Block count reporting** - Shows before/after domain counts for each list
-
-💾 **Disk space check** - Ensures enough space before downloading
-
-🔍 **Unbound verification** - Tests that Unbound restarts successfully
-
-📄 **.env file support** - Manage multiple lists with a simple config file
-
-🛡️ **Never overwrites config** - Your .env file edits are always preserved
+*   **Removes obsolete blocklists** – Deletes `.conf` files that are no longer in your `.env`
+*   **Cleans up old `include:` lines** – Removes redundant includes from `unbound_custom.conf`
+*   **Safe deletion** – Only removes files marked as generated by the script
+*   **Log rotation** – Automatically configures daily log rotation (keeps 7 days)
 
 * * *
 
@@ -265,21 +338,51 @@ Testing & Verification
 
 ### Test Your Blocklist
 
-Run a lookup for a domain known to be on your blocklist (e.g., `doubleclick.net`):
+Since Firewalla's DNS Booster intercepts DNS queries, you should test your blocklist using one of these methods:
+
+**Option 1: Query Unbound Directly (Most Reliable)**
 
     nslookup ad.doubleclick.net 127.0.0.1
 
-**Success:** The result should return `0.0.0.0` or `NXDOMAIN`.
+**Option 2: Test a Domain That's Definitely in OISD**
 
-**Failure:** If it returns a real IP address, the blocklist is not loading correctly.
+    # OISD definitely blocks these domains
+    nslookup ad.doubleclick.net
+    nslookup doubleclick.net
+    nslookup googleadservices.com
+
+**Option 3: Check the Blocklist File Directly**
+
+    # See if a domain is in the list
+    grep "doubleclick" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
+
+**Success:** If querying Unbound directly, you should see `0.0.0.0` or `NXDOMAIN`.  
+**Failure:** If you see a real IP address, the blocklist is not loading correctly.
+
+> **Note:** If you see `connection refused` when querying `127.0.0.1`, this is normal on some Firewalla setups. Use Option 2 or 3 instead.
+
+### Verify Blocklist is Loaded in Unbound
+
+    # Check Unbound status
+    sudo systemctl status unbound
+    
+    # Count entries in the blocklist
+    grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
 
 ### Verify Blocklist Sizes
 
-Check how many domains are being blocked by each list:
-
     # Count domains in each list
-    grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
-    grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
+    for file in /home/pi/.firewalla/config/unbound_local/*.conf; do
+        if [[ "$file" != *"unbound_custom.conf" && "$file" != *"unbound_local.conf" ]]; then
+            echo "$(basename "$file"): $(grep -c 'local-zone:' "$file") entries"
+        fi
+    done
+
+### Check Unbound Logs
+
+If something isn't working, check the Unbound logs:
+
+    sudo journalctl -u unbound -n 50
 
 ### Check Update Logs
 
@@ -294,11 +397,71 @@ View the script's activity log:
     # Follow log in real-time
     tail -f /var/log/unbound_update.log
 
-### Check Unbound Status
+* * *
 
-If something isn't working, check the Unbound logs:
+Rescue Your Firewalla
+---------------------
 
-    sudo journalctl -u unbound -n 50
+If Unbound fails to start after an update, your internet may stop working. Here's how to recover:
+
+### Option 1: Use the Script's Auto-Restore
+
+The script automatically creates backups before updating. If Unbound fails to restart, it will restore all backups automatically. Check the logs:
+
+    tail -50 /var/log/unbound_update.log
+
+### Option 2: Manually Remove Problematic Lists
+
+If the script couldn't recover automatically:
+
+    # 1. Move all blocklist files out of the directory
+    sudo mkdir /tmp/unbound_backup
+    sudo mv /home/pi/.firewalla/config/unbound_local/*.conf /tmp/unbound_backup/
+    
+    # 2. Restart Unbound (should start with default config)
+    sudo systemctl restart unbound
+    
+    # 3. Check if Unbound is running
+    sudo systemctl status unbound
+    
+    # 4. If it's running, troubleshoot by adding lists back one by one
+    # Move files back one at a time and restart Unbound after each
+
+### Option 3: Fix Invalid Include Lines
+
+If the script somehow didn't clean up old `include:` lines:
+
+    # Check for include lines in unbound_custom.conf
+    grep "^include:" /home/pi/.firewalla/config/unbound_local/unbound_custom.conf
+    
+    # Remove all include lines pointing to unbound_local
+    sudo sed -i '/^include:.*unbound_local/d' /home/pi/.firewalla/config/unbound_local/unbound_custom.conf
+
+### Option 4: Remove Specific Invalid Blocklist
+
+If you know which list is causing the problem:
+
+    # Remove the problem file (replace with actual filename)
+    sudo rm /home/pi/.firewalla/config/unbound_local/problem_list.conf
+    
+    # Restart Unbound
+    sudo systemctl restart unbound
+
+### Option 5: Start Fresh
+
+If nothing works:
+
+    # 1. Disable all blocklists in .env
+    sudo nano /home/pi/.firewalla/config/blocklists.env
+    # Comment out ALL lines by adding # at the start of each
+    
+    # 2. Clean up all generated blocklist files
+    sudo rm /home/pi/.firewalla/config/unbound_local/*.conf
+    
+    # 3. Restart Unbound
+    sudo systemctl restart unbound
+    
+    # 4. Re-enable lists one by one in .env and run the script
 
 * * *
 
@@ -307,13 +470,15 @@ Customization
 
 ### Adding a New Blocklist
 
-To add a new blocklist, simply edit your .env file:
+To add a new blocklist, simply edit your `.env` file:
 
-    nano /home/pi/.firewalla/config/blocklists.env
+    sudo nano /home/pi/.firewalla/config/blocklists.env
 
 Add a new line with the format:
 
-    list_name|https://url-to-your-list/unbound|/home/pi/.firewalla/config/unbound_local/your_list.conf
+    list_name|https://url-to-your-list|/home/pi/.firewalla/config/unbound_local/your_list.conf
+
+The script will auto-detect the format (RPZ, hosts, adblock, wildcard, etc.) and convert it.
 
 Run the script again to download the new list:
 
@@ -321,20 +486,80 @@ Run the script again to download the new list:
 
 ### Removing a Blocklist
 
-To remove a blocklist:
+To remove a blocklist, either:
 
-1.  Comment it out in the .env file by adding `#` at the start of the line, OR
+1.  Comment it out in the `.env` file by adding `#` at the start of the line, OR
 2.  Delete the line entirely
-3.  AND delete the block list itself and restart Unbound
+
+The script will automatically delete the corresponding `.conf` file on the next run.
 
 ### Popular Blocklist URLs
 
-| List Name | URL | Size | Recommended Hardware |
-|-----------|-----|------|---------------------|
-| OISD Big | `https://big.oisd.nl/unbound` | ~400k+ | High |
-| OISD Light | `https://oisd.nl/unbound` | ~100k | Entry/Mid |
-| HaGeZi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt` | ~150k | Mid |
-| HaGeZi Ultimate | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt` | ~500k+ | High |
+List Name
+
+URL
+
+Size
+
+Recommended Hardware
+
+OISD Big
+
+`https://big.oisd.nl/unbound`
+
+~400k+
+
+High
+
+OISD Light
+
+`https://oisd.nl/unbound`
+
+~100k
+
+Entry/Mid
+
+HaGeZi Pro
+
+`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt`
+
+~150k
+
+Mid
+
+HaGeZi Ultimate
+
+`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt`
+
+~500k+
+
+High
+
+HaGeZi TIF (RPZ)
+
+`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt`
+
+~1.5M
+
+High
+
+HaGeZi DoH (RPZ)
+
+`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt`
+
+~3-5k
+
+Any
+
+Steven Black's Hosts
+
+`https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts`
+
+~100k+
+
+Mid/High
+
+> **Note:** The OISD Light list is already built into Firewalla's standard protection and does not need to be added manually.
 
 * * *
 
@@ -363,18 +588,17 @@ Troubleshooting
 
 Check these common issues:
 
-    # Check if the conf files exist
-    ls -la /home/pi/.firewalla/config/unbound_local/
+    # Check if any blocklist files exist
+    ls -la /home/pi/.firewalla/config/unbound_local/*.conf
     
-    # Check if each file has content
+    # Check if any file has content
     head -20 /home/pi/.firewalla/config/unbound_local/oisd_big.conf
     
     # Check Unbound logs for errors
     sudo journalctl -u unbound -n 50
     
-    # Check if syntax error exists in any file
+    # Check if there are empty domain entries in any file
     grep -E "local-zone:[[:space:]]*$" /home/pi/.firewalla/config/unbound_local/*.conf
-    # If this returns anything, you have empty domain entries - the script should prevent this
 
 ### The update script fails with "Download was empty"
 
@@ -406,11 +630,11 @@ Check these common issues:
     # Lines should not start with #
     # Format should be: NAME|URL|OUTPUT_FILE
 
-### NXDOMAIN vs 0.0.0.0 results
+### The script downloaded HTML instead of the list
 
-*   Some lists return `0.0.0.0`, others return `NXDOMAIN`
-*   Both are valid blocking responses
-*   If you see a real IP address, the block isn't working
+*   The script automatically detects this and won't install it
+*   Check the URL is correct
+*   Some providers may have changed their URL format
 
 ### Script not running from crontab
 
@@ -420,11 +644,32 @@ Check these common issues:
     # Check that the script has execute permissions
     ls -l /home/pi/update_dns.sh
     
-    # Use full path to script in sudo crontab -e
+    # Use full path to script in crontab
     0 0 * * 0 /home/pi/update_dns.sh
     
     # Check if logs show cron execution
     grep update_dns /var/log/syslog
+    
+    # Use the absolute path to sudo in crontab if needed
+    0 0 * * 0 /usr/bin/sudo /home/pi/update_dns.sh --quiet
+
+### Format detection error
+
+If the script says "Unable to detect format", it means the list is in an unrecognized format. The script will skip it and continue. To fix:
+
+1.  Check the URL is correct
+2.  Make sure the list contains domain names (not just IP addresses)
+3.  Try a different URL from the same provider (e.g., use the Unbound format instead of RPZ)
+
+### "Connection refused" when testing DNS
+
+This is normal on some Firewalla setups. DNS Booster handles queries differently. Use file-based verification instead:
+
+    # Check if the blocklist has entries
+    grep -c "local-zone:" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
+    
+    # Check if a specific domain is in the list
+    grep "example.com" /home/pi/.firewalla/config/unbound_local/oisd_big.conf
 
 * * *
 
@@ -459,31 +704,13 @@ External blocklists don't show in the Firewalla app, but you can count entries:
 
     # Count domains in each list
     for file in /home/pi/.firewalla/config/unbound_local/*.conf; do
-        echo "$(basename $file): $(grep -c 'local-zone:' $file) entries"
+        if [[ "$file" != *"unbound_custom.conf" && "$file" != *"unbound_local.conf" ]]; then
+            echo "$(basename "$file"): $(grep -c 'local-zone:' "$file") entries"
+        fi
     done
     
     # Compare with previous counts from logs
     grep "New block count" /var/log/unbound_update.log
-
-View top 40 blocks for the past week:
-    ```
-    sudo journalctl -u unbound --since "7 days ago" --no-pager | grep always_null | awk '{for(i=1;i<=NF;i++) if($i=="info:") print $(i+1)}' | sort | uniq -c | sort -nr | head -n 40
-    ```
-
-View top 20 blocks for the past day:
-    ```
-    sudo journalctl -u unbound --since "1 day ago" --no-pager | grep always_null | awk '{for(i=1;i<=NF;i++) if($i=="info:") print $(i+1)}' | sort | uniq -c | sort -nr | head -n 20
-    ```
-
-View top 10 blocks for the past hour:
-    ```
-    sudo journalctl -u unbound --since "1 hour ago" --no-pager | grep always_null | awk '{for(i=1;i<=NF;i++) if($i=="info:") print $(i+1)}' | sort | uniq -c | sort -nr | head -n 10
-    ```
-
-View blocks as they happen/live:
-    ```
-    sudo journalctl -u unbound -f -o cat | grep --line-buffered always_null
-    ```
 
 * * *
 
@@ -504,7 +731,7 @@ If you need to update the script to a newer version:
     chmod +x /home/pi/update_dns.sh
     
     # Test the new version
-    sudo /home/pi/update_dns.sh
+    sudo /home/pi/update_dns.sh --dry-run
 
 * * *
 
@@ -514,20 +741,22 @@ Important Notes
 *   **Backup your configuration** before making changes
 *   **Test thoroughly** after any change
 *   **Monitor your system** for memory usage when using large lists
-*   **Keep DNS Booster ON** - it's required for proper operation
-*   **Manual updates only** - these lists won't appear in the Firewalla app
-*   **Check logs** if something doesn't work - `/var/log/unbound_update.log`
-*   **Your .env file is safe** - the script will never overwrite it
+*   **Keep DNS Booster ON** – it's required for proper operation
+*   **Manual updates only** – these lists won't appear in the Firewalla app
+*   **Check logs** if something doesn't work – `/var/log/unbound_update.log`
+*   **Your .env file is safe** – the script will never overwrite it
+*   **Firewalla auto-loads all `.conf` files** – no `include:` lines needed
+*   **The script auto-cleans up** old lists and redundant includes
 
 * * *
 
 Additional Resources
 --------------------
 
-*   [Firewalla Unbound Configuration](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config) - Configure Unbound cache size
-*   [OISD Blocklist](https://oisd.nl/) - The default list used in this guide
-*   [HaGeZi Blocklists](https://github.com/hagezi/dns-blocklists) - Alternative blocklist provider
-*   [Firewalla Community](https://community.firewalla.com/) - Get help from other users
+*   [Firewalla Unbound Configuration](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config) – Configure Unbound cache size
+*   [OISD Blocklist](https://oisd.nl/) – The default list used in this guide
+*   [HaGeZi Blocklists](https://github.com/hagezi/dns-blocklists) – Alternative blocklist provider
+*   [Firewalla Community](https://community.firewalla.com/) – Get help from other users
 
 * * *
 
