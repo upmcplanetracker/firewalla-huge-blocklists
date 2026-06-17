@@ -26,13 +26,14 @@ QUIET="${QUIET:-false}"
 MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # MB
 UNBOUND_LOCAL_DIR="/home/pi/.firewalla/config/unbound_local"
 UNBOUND_CUSTOM_CONF="${UNBOUND_LOCAL_DIR}/unbound_custom.conf"
-TMP_DIR="${UNBOUND_LOCAL_DIR}/tmp"
+# NEW: temp directory outside of unbound_local to avoid accidental inclusion
+TMP_DIR="/home/pi/.firewalla/tmp/unbound_update"
 
 # Create temporary directory if it doesn't exist
 mkdir -p "$TMP_DIR"
 
 # Cleanup trap: remove temporary files on exit
-trap 'rm -f "$TMP_DIR"/*_tmp.conf 2>/dev/null' EXIT INT TERM
+trap 'rm -f "$TMP_DIR"/*_tmp.conf "$TMP_DIR"/*_converted.conf 2>/dev/null; rmdir "$TMP_DIR" 2>/dev/null || true' EXIT INT TERM
 
 # =============================================================================
 # Functions
@@ -80,7 +81,6 @@ check_command() {
 }
 
 check_curl_installed() {
-    # Firewalla boxes have curl pre-installed; just verify existence.
     if ! command -v curl &> /dev/null; then
         error_exit "curl is required but not installed. Please install manually: sudo apt install curl"
     fi
@@ -120,7 +120,7 @@ cleanup_unbound_includes() {
 }
 
 # -----------------------------------------------------------------------------
-# Log Rotation Setup (optional – auto-recreates if wiped)
+# Log Rotation Setup
 # -----------------------------------------------------------------------------
 setup_log_rotation() {
     local log_file="$1"
@@ -206,7 +206,7 @@ download_with_retry() {
 }
 
 # -----------------------------------------------------------------------------
-# Format detection and conversion (all converters now use awk for speed)
+# Format detection and conversion
 # -----------------------------------------------------------------------------
 detect_format_and_convert() {
     local input_file="$1"
@@ -374,7 +374,6 @@ convert_adblock_to_unbound() {
             sub(/^\|\|/, "", domain)
             sub(/\^$/, "", domain)
             if (domain != "") {
-                # Remove wildcard prefix if present
                 gsub(/^\*\./, "", domain)
                 printf "    local-zone: \"%s.\" always_null\n", domain
             }
@@ -533,7 +532,6 @@ restart_unbound() {
     
     log "Restarting Unbound..."
     
-    # Directly restart unbound (works on Firewalla; alternative: firerouter_dns)
     if ! sudo systemctl restart unbound; then
         log "ERROR: Unbound failed to restart! Restoring all backups..."
         
@@ -591,7 +589,6 @@ verify_unbound() {
     
     log "Checking Unbound logs for errors..."
     local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -ciE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" || echo "0")
-    # Remove any whitespace/newlines
     error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')
     if [[ "$error_count" -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
@@ -602,7 +599,6 @@ verify_unbound() {
         done
     fi
     
-    # List all blocklist files and their entry counts
     for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
         if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
             local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
@@ -625,9 +621,6 @@ get_block_count() {
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Cleanup old blocklists that are no longer in the .env
-# -----------------------------------------------------------------------------
 cleanup_old_lists() {
     local -n expected_files="$1"
     log "Checking for obsolete blocklist files..."
@@ -907,7 +900,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.6"
+                echo "Firewalla Unbound Blocklist Update Script v2.7"
                 exit 0
                 ;;
             *)
