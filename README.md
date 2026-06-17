@@ -25,8 +25,8 @@ Critical: Before You Begin
 
 ### 2\. Format & Compatibility
 
-*   **Requirement:** You must use **Unbound- or RPZ-formatted** lists. Unbound files must contain `local-zone:` entries and the script is smart enough to convert RPZ files to Unbound files.
-*   **Warning:** While this script should be smart enough to reject standard "hosts" files (starting with `0.0.0.0` or `127.0.0.1`), if they sneak through they **will break Unbound**.  If you find a new list you want to include, make sure to pick Unbound or RPZ format.
+*   **Requirement:** **Unbound formatted** lists are preferred, but the script is robust enough to detect multiple formats (RPZ, Wildcard, Hosts, Adblock, DNSMasq, Plain Domans) and convert them to Unbound format.
+*   **Warning:** While this script should be smart enough to reject standard IP only files, if they sneak through they **will break Unbound**. If this happens, delete the newly added block list and `sudo systemctl restart unbound` or turn the Unbound toggle off and back on again in the app.
 
 ### 3. Hardware Tiers & Memory
 
@@ -162,18 +162,12 @@ Add or modify the following configuration:
         prefetch: yes
         prefetch-key: yes
     
-        # Include ALL your blocklists from the .env file
-        include: "/home/pi/.firewalla/config/unbound_local/oisd_big.conf"
-        include: "/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf"
-        # include: "/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf"
-
-**Important:** Each list you enable in the .env file must have a corresponding `include:` line in your Unbound config.
-
 ### Step 6: Restart & Test
 
 Restart Unbound to apply the changes:
 
     sudo systemctl restart unbound
+    # or toggle the Firewalla app Unbound slider off and back on
 
 **Verify Unbound is running:**
 
@@ -321,22 +315,17 @@ Add a new line with the format:
 
     list_name|https://url-to-your-list/unbound|/home/pi/.firewalla/config/unbound_local/your_list.conf
 
-Then add the corresponding include line to your Unbound config:
-
-    include: "/home/pi/.firewalla/config/unbound_local/your_list.conf"
-
 Run the script again to download the new list:
 
     sudo /home/pi/update_dns.sh
 
 ### Removing a Blocklist
 
-To remove a blocklist, either:
+To remove a blocklist:
 
 1.  Comment it out in the .env file by adding `#` at the start of the line, OR
 2.  Delete the line entirely
-
-Then remove the corresponding `include:` line from your Unbound config and restart Unbound.
+3.  AND delete the block list itself and restart Unbound
 
 ### Popular Blocklist URLs
 
