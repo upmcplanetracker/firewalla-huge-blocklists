@@ -25,8 +25,8 @@ Critical: Before You Begin
 
 ### 2\. Format & Compatibility
 
-*   **Requirement:** You must use **Unbound-formatted** lists. The file must contain `local-zone:` entries.
-*   **Warning:** Standard "hosts" files (starting with `0.0.0.0` or `127.0.0.1`) **will break Unbound**. If a list is not properly formatted, your internet will stop working.
+*   **Requirement:** You must use **Unbound- or RPZ-formatted** lists. Unbound files must contain `local-zone:` entries and the script is smart enough to convert RPZ files to Unbound files.
+*   **Warning:** While this script should be smart enough to reject standard "hosts" files (starting with `0.0.0.0` or `127.0.0.1`), if they sneak through they **will break Unbound**.  If you find a new list you want to include, make sure to pick Unbound or RPZ format.
 
 ### 3. Hardware Tiers & Memory
 
