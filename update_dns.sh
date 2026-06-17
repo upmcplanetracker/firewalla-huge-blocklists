@@ -6,6 +6,7 @@
 # Description: Downloads and validates Unbound-formatted blocklists with
 #              safety checks, logging, and automatic rollback on failure.
 #              Supports multiple blocklists via .env configuration file.
+#              Automatically converts RPZ format to Unbound format.
 # =============================================================================
 
 set -euo pipefail
@@ -21,7 +22,7 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 DRY_RUN="${DRY_RUN:-false}"
 QUIET="${QUIET:-false}"
-MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # Reduced from 100MB to 50MB
+MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # MB
 
 # =============================================================================
 # Functions
@@ -51,13 +52,12 @@ fix_ownership() {
 }
 
 check_disk_space() {
-    local required_space=$MIN_DISK_SPACE  # MB
+    local required_space=$MIN_DISK_SPACE
     local available_space=$(df -m /tmp | awk 'NR==2 {print $4}')
     
     if [[ $available_space -lt $required_space ]]; then
         log "WARNING: Low disk space: ${available_space}MB available, ${required_space}MB recommended"
         log "  Firewalla may dynamically free space as needed"
-        # Don't exit, just warn
     else
         log "Disk space check passed: ${available_space}MB available"
     fi
@@ -112,6 +112,59 @@ download_with_retry() {
     return 0
 }
 
+# -----------------------------------------------------------------------------
+# New function: Convert RPZ format to Unbound format
+# -----------------------------------------------------------------------------
+convert_rpz_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Attempting to convert RPZ format to Unbound format for $list_name..."
+    
+    # Check if the file looks like RPZ (contains "CNAME ." or lines without "local-zone:")
+    if grep -q "local-zone:" "$input_file"; then
+        log "File already contains Unbound format, no conversion needed"
+        return 0
+    fi
+    
+    # Build the conversion: add "server:" header, then convert each domain line
+    {
+        echo "server:"
+        # Use awk to parse RPZ format:
+        # - skip empty lines, comments (starting with ; or #)
+        # - skip lines starting with $ (SOA)
+        # - skip lines that start with * (wildcard)
+        # - extract first field as domain, remove trailing dot
+        # - output "    local-zone: \"%s.\" always_null"
+        awk '
+            /^[[:space:]]*$/ { next }
+            /^[[:space:]]*[;#]/ { next }
+            /^\$/ { next }
+            /^\*\./ { next }
+            {
+                domain = $1
+                # Remove trailing dot if present
+                sub(/\.$/, "", domain)
+                # Skip if domain is "NS" or "SOA" or empty
+                if (domain != "" && domain != "NS" && domain != "SOA") {
+                    printf "    local-zone: \"%s.\" always_null\n", domain
+                }
+            }
+        ' "$input_file"
+    } > "$output_file"
+    
+    # Safety: check that output file has content and contains local-zone
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: Conversion failed - output is empty or invalid"
+        return 1
+    fi
+    
+    log "✓ Conversion to Unbound format successful"
+    return 0
+}
+# -----------------------------------------------------------------------------
+
 validate_file() {
     local file="$1"
     local list_name="$2"
@@ -134,10 +187,16 @@ validate_file() {
     
     # Check 3: Contains Unbound format
     if ! grep -q "local-zone:" "$file"; then
-        log "ERROR: File does not contain expected 'local-zone:' entries for $list_name"
-        log "  This usually means the URL is for a different format (RPZ, hosts, etc.)"
-        log "  Please check the URL and try again"
-        return 1
+        log "WARNING: File does not contain 'local-zone:' entries for $list_name"
+        log "  Attempting to convert from RPZ format..."
+        local temp_converted="/tmp/${list_name}_converted.conf"
+        if convert_rpz_to_unbound "$file" "$temp_converted" "$list_name"; then
+            mv "$temp_converted" "$file"
+            log "✓ Conversion successful, using converted file"
+        else
+            log "ERROR: Conversion failed. File may be in an unsupported format."
+            return 1
+        fi
     fi
     log "✓ File contains Unbound format entries"
     
@@ -203,7 +262,6 @@ restart_unbound() {
             local original="${backup%.backup}"
             mv "$backup" "$original"
             log "Restored $original from backup"
-            # Fix ownership after restore
             chown pi:pi "$original" 2>/dev/null || true
         done
         
@@ -223,13 +281,11 @@ verify_unbound() {
     log "Verifying Unbound status..."
     sleep 2
     
-    # Check if Unbound is running
     if ! systemctl is-active --quiet unbound; then
         error_exit "Unbound is not running after restart!"
     fi
     log "✓ Unbound is running"
     
-    # Check memory usage
     local memory_mb=$(free -m | awk '/Mem:/ {print $3}')
     local total_mb=$(free -m | awk '/Mem:/ {print $2}')
     local percent=$((memory_mb * 100 / total_mb))
@@ -238,7 +294,6 @@ verify_unbound() {
         log "WARNING: High memory usage! Consider using a smaller blocklist."
     fi
     
-    # Test DNS resolution through DNS Booster (system DNS)
     log "Testing DNS resolution..."
     if command -v dig &> /dev/null; then
         if dig google.com +short &> /dev/null; then
@@ -256,7 +311,6 @@ verify_unbound() {
         log "⚠ dig/nslookup not available, skipping DNS resolution test"
     fi
     
-    # Check Unbound logs for errors (skip duplicate warnings)
     log "Checking Unbound logs for errors..."
     local error_count=$(sudo journalctl -u unbound --since "1 minute ago" | grep -iE "error|fatal" | grep -v "duplicate local-zone" | wc -l)
     if [[ $error_count -eq 0 ]]; then
@@ -268,7 +322,6 @@ verify_unbound() {
         done
     fi
     
-    # Check if blocklist is actually in the Unbound config
     local unbound_conf="/home/pi/.firewalla/config/unbound_local/unbound_custom.conf"
     if [[ -f "$unbound_conf" ]]; then
         if grep -q "include:.*\.conf" "$unbound_conf"; then
@@ -278,7 +331,6 @@ verify_unbound() {
         fi
     fi
     
-    # Check if blocklist file exists and has content
     for conf_file in /home/pi/.firewalla/config/unbound_local/*.conf; do
         if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
             local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
@@ -314,23 +366,18 @@ parse_env_file() {
     
     log "Loading configuration from $env_file"
     
-    # Read the env file line by line
     while IFS= read -r line || [[ -n "$line" ]]; do
-        # Skip empty lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         
-        # Parse lines that define blocklists (LIST_NAME|URL|OUTPUT_FILE)
         if [[ "$line" =~ ^[[:space:]]*([^|]+)\|[[:space:]]*([^|]+)\|[[:space:]]*(.+)$ ]]; then
             local name="${BASH_REMATCH[1]}"
             local url="${BASH_REMATCH[2]}"
             local output="${BASH_REMATCH[3]}"
             
-            # Trim whitespace
             name=$(echo "$name" | xargs)
             url=$(echo "$url" | xargs)
             output=$(echo "$output" | xargs)
             
-            # Only add if all fields are non-empty
             if [[ -n "$name" && -n "$url" && -n "$output" ]]; then
                 list_array+=("$name|$url|$output")
                 log "  Loaded: $name -> $output"
@@ -348,18 +395,14 @@ parse_env_file() {
 }
 
 create_env_template() {
-    # Check if the env file already exists
     if [[ -f "$ENV_FILE" ]]; then
         log "✓ .env file already exists at $ENV_FILE - keeping your edits"
-        # Fix ownership if it exists but is owned by root
         chown pi:pi "$ENV_FILE" 2>/dev/null || true
         return 0
     fi
     
-    # Create directory if it doesn't exist
     mkdir -p "$(dirname "$ENV_FILE")"
     
-    # Create the template with default OISD Big list
     cat > "$ENV_FILE" << 'EOF'
 # =============================================================================
 # Firewalla Unbound Blocklist Configuration
@@ -378,17 +421,22 @@ oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oi
 # OISD Light List (Recommended for Entry tier hardware)
 # oisd_light|https://oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_light.conf
 
-# HaGeZi Pro List
+# HaGeZi Pro List (Unbound format)
 # hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
 
-# HaGeZi Ultimate List (Large - requires High tier hardware)
+# HaGeZi Ultimate List (Unbound format)
 # hagezi_ultimate|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt|/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf
+
+# HaGeZi TIF (RPZ format - will be converted automatically)
+# hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
+
+# HaGeZi DoH (RPZ format - will be converted automatically)
+# hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
 
 # Custom lists can be added here
 # custom_list|https://example.com/unbound-list.txt|/home/pi/.firewalla/config/unbound_local/custom.conf
 EOF
     
-    # Fix ownership - make sure pi user owns it
     chown pi:pi "$ENV_FILE" 2>/dev/null || true
     chown -R pi:pi "$(dirname "$ENV_FILE")" 2>/dev/null || true
     
@@ -415,9 +463,9 @@ process_list() {
         return 1
     fi
     
-    # Validate
+    # Validate and optionally convert
     if ! validate_file "$temp_file" "$list_name"; then
-        log "✗ Validation failed for $list_name - skipping"
+        log "✗ Validation/conversion failed for $list_name - skipping"
         rm -f "$temp_file"
         return 1
     fi
@@ -426,7 +474,7 @@ process_list() {
     old_count=$(get_block_count "$output_file")
     log "Old block count for $list_name: $old_count"
     
-    # Apply update (respects DRY_RUN)
+    # Apply update
     apply_update "$temp_file" "$output_file" "$list_name"
     
     # Report new block count
@@ -442,7 +490,6 @@ process_list() {
             log "ℹ $list_name unchanged"
         fi
         
-        # Clean up backup if everything succeeded
         if [[ -f "${output_file}.backup" ]]; then
             rm -f "${output_file}.backup"
             log "Cleaned up backup file for $list_name"
@@ -494,7 +541,6 @@ EOF
 # =============================================================================
 
 main() {
-    # Parse command line arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
@@ -514,7 +560,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.1"
+                echo "Firewalla Unbound Blocklist Update Script v2.2"
                 exit 0
                 ;;
             *)
@@ -532,14 +578,12 @@ main() {
     fi
     log "=========================================="
     
-    # Pre-flight checks
     log "Running pre-flight checks..."
     check_curl_installed
     check_command grep
     check_command systemctl
     check_disk_space
     
-    # Note about sudo
     if [[ $EUID -ne 0 ]]; then
         log "Note: Not running as root. Some operations require sudo."
         log "  The script will use sudo for:"
@@ -547,10 +591,8 @@ main() {
         log "  - Restarting Unbound"
     fi
     
-    # Create env template if it doesn't exist (will NOT overwrite existing)
     create_env_template
     
-    # Parse .env file
     declare -a BLOCKLISTS
     if ! parse_env_file "$ENV_FILE" BLOCKLISTS; then
         log "WARNING: No valid lists found in .env file"
@@ -560,7 +602,6 @@ main() {
         error_exit "No blocklists configured"
     fi
     
-    # Process each list - continue even if one fails
     local failed_lists=()
     local success_lists=()
     for list_entry in "${BLOCKLISTS[@]}"; do
@@ -574,17 +615,13 @@ main() {
         fi
     done
     
-    # If we had at least one successful update, proceed with restart
     if [[ ${#success_lists[@]} -gt 0 ]]; then
-        # Fix ownership of the entire config directory
         fix_ownership "/home/pi/.firewalla/config"
         
-        # Restart Unbound once after all updates (respects DRY_RUN)
         if ! restart_unbound; then
             error_exit "Update failed during restart phase"
         fi
         
-        # Verify Unbound is working (respects DRY_RUN)
         if [[ "$DRY_RUN" != "true" ]]; then
             verify_unbound
         else
@@ -596,7 +633,6 @@ main() {
         error_exit "All lists failed to update"
     fi
     
-    # Report results
     log "=========================================="
     log "Update Summary:"
     log "✓ Successfully updated: ${#success_lists[@]} list(s)"
@@ -623,7 +659,6 @@ main() {
 # Execution
 # =============================================================================
 
-# Allow sourcing for testing
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
