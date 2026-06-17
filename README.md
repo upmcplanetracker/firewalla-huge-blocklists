@@ -476,6 +476,15 @@ External blocklists don't show in the Firewalla app, but you can count entries:
     # Compare with previous counts from logs
     grep "New block count" /var/log/unbound_update.log
 
+View top blocks for the past week:
+    `sudo journalctl -u unbound --since \"7 days ago\" --no-pager | grep always_null | awk '\''{for(i=1;i<=NF;i++) if(\$i==\"info:\") print \$(i+1)}'\'' | sort | uniq -c | sort -nr | head -n 40`
+
+View top blocks for the past day:
+    `sudo journalctl -u unbound -n 2000 --no-pager | grep always_null | awk '\''{for(i=1;i<=NF;i++) if(\$i==\"info:\") print \$(i+1)}'\'' | sort | uniq -c | sort -nr | head -n 20`
+
+View blocks as they happen/live:
+    `sudo journalctl -u unbound -f -o cat | grep --line-buffered always_null`
+
 * * *
 
 Updating the Script
