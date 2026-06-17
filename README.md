@@ -18,7 +18,7 @@ Critical: Before You Begin
 ### 1\. External List Management
 
 *   **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD big, HaGeZi Ultimate or Pro++).
-*   **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats.
+*   **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats. I do have CLI commands below that will show you live, past 1 hour, and past 7 day blocked sites.
 *   **App Toggles:** You cannot enable or disable these lists via the Firewalla app interface. All management must be done via SSH.
 *   **DNS Booster:** You must keep the **DNS Booster ON** in the Firewall app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
 *   **Unbound:** You must be using Unbound as the DNS resolver. Please visit my [Firewalla Unbound Configuration repo](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config) first to learn how to set the Unbound cache size.
@@ -87,37 +87,11 @@ If the script cannot detect the format, it will **skip** the list and continue w
 
 Large lists (~400k+ domains) consume significant RAM. Match your list choice to your hardware:
 
-Hardware Tier
-
-Firewalla Models
-
-Recommended Unbound Cache
-
-Max Domain Recommendation
-
-**Entry**
-
-Purple SE, Blue Plus
-
-16m / 32m
-
-**Avoid Big Lists** (Use Light only)
-
-**Mid**
-
-Gold, Purple
-
-32m / 64m
-
-Up to 100k domains
-
-**High**
-
-Gold Plus, Gold Pro
-
-128m / 256m
-
-400k+ domains (Big/Ultimate)
+| Hardware Tier | Firewalla Models | Recommended Unbound Cache | Max Domain Recommendation |
+| :--- | :--- | :--- | :--- |
+| **Entry** | Purple SE | 16m / 32m | **Avoid Big Lists** (Use Light only/may want to stick with built in lists) |
+| **Mid** | Gold, Gold SE, Orange, Purple | 32m / 64m | Up to 100k domains |
+| **High** | Gold Plus, Gold Pro | 128m / 256m | 400k+ domains (Big/Ultimate) |
 
 * * *
 
@@ -134,8 +108,8 @@ SSH into your Firewalla and ensure required tools are available:
     
     # Install nano for editing (if not already installed)
     sudo apt install nano
-    
-    # curl will be automatically installed by the script if needed
+
+    # curl is already built into Firewalla.
 
 ### Step 2: Download the Update Script
 
@@ -225,7 +199,7 @@ The script will:
 5.  Install each list to the specified location
 6.  Create backups before replacing existing files
 7.  Remove any obsolete blocklist files no longer in `.env`
-8.  Clean up any old `include:` lines from your Unbound config
+8.  Clean up any old `include:` lines from your main local Unbound config
 
 **Verify the files were created:**
 
@@ -296,9 +270,9 @@ To reduce log noise, use the `--quiet` flag:
 
 **Apply Changes:**
 
-To ensure the crontab is loaded and the network stack syncs correctly, reboot your Firewalla (will take 3-4 minutes for your internet to return):
+To ensure the crontab is loaded and the network stack syncs correctly, restart your Firewalla service (will take 1-2 minutes for your internet to return):
 
-    sudo reboot
+    sudo systemctl restart firewalla
 
 * * *
 
@@ -309,7 +283,7 @@ The `update_dns.sh` script includes several safety and convenience features:
 
 ### Core Features
 
-*   **Automatic curl installation** – Installs curl if not present
+*   **Automatic curl detection** – `curl` should be preinstalled but it if isn't the script will gracefully exit
 *   **Retry logic** – Retries download up to 3 times on failure
 *   **Multiple validation checks** – Validates file format, size, and content
 *   **Automatic rollback** – Restores previous config if update fails
@@ -495,71 +469,16 @@ The script will automatically delete the corresponding `.conf` file on the next 
 
 ### Popular Blocklist URLs
 
-List Name
+| List Name | URL | Size | Recommended Hardware |
+| :--- | :--- | :--- | :--- |
+| OISD Big | `https://big.oisd.nl/unbound` | ~400k+ | High |
+| HaGeZi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt` | ~150k | Mid |
+| HaGeZi Ultimate | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt` | ~500k+ | High |
+| HaGeZi TIF (RPZ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt` | ~1.5M | High |
+| HaGeZi DoH (RPZ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt` | ~3-5k | Any |
+| Steven Black's Hosts | `https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts` | ~100k+ | Mid/High |
 
-URL
-
-Size
-
-Recommended Hardware
-
-OISD Big
-
-`https://big.oisd.nl/unbound`
-
-~400k+
-
-High
-
-OISD Light
-
-`https://oisd.nl/unbound`
-
-~100k
-
-Entry/Mid
-
-HaGeZi Pro
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt`
-
-~150k
-
-Mid
-
-HaGeZi Ultimate
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt`
-
-~500k+
-
-High
-
-HaGeZi TIF (RPZ)
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt`
-
-~1.5M
-
-High
-
-HaGeZi DoH (RPZ)
-
-`https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt`
-
-~3-5k
-
-Any
-
-Steven Black's Hosts
-
-`https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts`
-
-~100k+
-
-Mid/High
-
-> **Note:** The OISD Light list is already built into Firewalla's standard protection and does not need to be added manually.
+> **Note:** The OISD Light list is already built into Firewalla's standard protection (listed in the app as just OISD) and does not need to be added manually.
 
 * * *
 
@@ -711,6 +630,27 @@ External blocklists don't show in the Firewalla app, but you can count entries:
     
     # Compare with previous counts from logs
     grep "New block count" /var/log/unbound_update.log
+
+View the top 40 weekly blocks:
+```
+sudo journalctl -u unbound --since "7 days ago" --no-pager \
+  | grep -F "always_null" \
+  | awk '{for(i=1;i<=NF;i++) if($i=="info:") print $(i+1)}' \
+  | sort | uniq -c | sort -nr | head -n 40
+```
+View the top 20 daily blocks:
+```
+sudo journalctl -u unbound --since "24 hours ago" --no-pager \
+  | grep -F "always_null" \
+  | awk '{for(i=1;i<=NF;i++) if($i=="info:") print $(i+1)}' \
+  | sort | uniq -c | sort -nr | head -n 20
+```
+View blocks as they happen:
+```
+sudo journalctl -u unbound -f -o cat \
+  | grep --line-buffered always_null \
+  | awk '{count++; print strftime("%H:%M:%S"), count, $0; fflush()}'
+```
 
 * * *
 
