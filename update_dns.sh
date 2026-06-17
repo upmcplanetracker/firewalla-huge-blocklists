@@ -21,6 +21,7 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 DRY_RUN="${DRY_RUN:-false}"
 QUIET="${QUIET:-false}"
+MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # Reduced from 100MB to 50MB
 
 # =============================================================================
 # Functions
@@ -50,13 +51,16 @@ fix_ownership() {
 }
 
 check_disk_space() {
-    local required_space=100  # MB
+    local required_space=$MIN_DISK_SPACE  # MB
     local available_space=$(df -m /tmp | awk 'NR==2 {print $4}')
     
     if [[ $available_space -lt $required_space ]]; then
-        error_exit "Insufficient disk space: ${available_space}MB available, ${required_space}MB required"
+        log "WARNING: Low disk space: ${available_space}MB available, ${required_space}MB recommended"
+        log "  Firewalla may dynamically free space as needed"
+        # Don't exit, just warn
+    else
+        log "Disk space check passed: ${available_space}MB available"
     fi
-    log "Disk space check passed: ${available_space}MB available"
 }
 
 check_command() {
@@ -100,10 +104,12 @@ download_with_retry() {
     done
     
     if [[ $success == false ]]; then
-        error_exit "Failed to download $list_name after $MAX_RETRIES attempts"
+        log "ERROR: Failed to download $list_name after $MAX_RETRIES attempts"
+        return 1
     fi
     
     log "Download completed successfully for $list_name"
+    return 0
 }
 
 validate_file() {
@@ -114,36 +120,44 @@ validate_file() {
     
     # Check 1: File is not empty
     if [[ ! -s "$file" ]]; then
-        error_exit "Downloaded file is empty for $list_name"
+        log "ERROR: Downloaded file is empty for $list_name"
+        return 1
     fi
     log "✓ File is not empty"
     
     # Check 2: Not HTML
     if grep -qiE "<html|<head|<body|<!DOCTYPE" "$file"; then
-        error_exit "Downloaded HTML instead of blocklist for $list_name"
+        log "ERROR: Downloaded HTML instead of blocklist for $list_name"
+        return 1
     fi
     log "✓ File is not HTML"
     
     # Check 3: Contains Unbound format
     if ! grep -q "local-zone:" "$file"; then
-        error_exit "File does not contain expected 'local-zone:' entries for $list_name"
+        log "ERROR: File does not contain expected 'local-zone:' entries for $list_name"
+        log "  This usually means the URL is for a different format (RPZ, hosts, etc.)"
+        log "  Please check the URL and try again"
+        return 1
     fi
     log "✓ File contains Unbound format entries"
     
     # Check 4: Validate line count is reasonable (at least 100 entries)
     local line_count=$(grep -c "local-zone:" "$file" || echo "0")
     if [[ $line_count -lt 100 ]]; then
-        error_exit "Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
+        log "ERROR: Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
+        return 1
     fi
     log "✓ File contains $line_count entries"
     
     # Check 5: Look for common syntax errors
     if grep -E "local-zone:[[:space:]]*$" "$file" | grep -q .; then
-        error_exit "Found empty domain entries for $list_name (missing domain name after local-zone:)"
+        log "ERROR: Found empty domain entries for $list_name (missing domain name after local-zone:)"
+        return 1
     fi
     log "✓ No empty domain entries found"
     
     log "All validation checks passed for $list_name"
+    return 0
 }
 
 apply_update() {
@@ -396,10 +410,17 @@ process_list() {
     log "=========================================="
     
     # Download
-    download_with_retry "$url" "$temp_file" "$list_name"
+    if ! download_with_retry "$url" "$temp_file" "$list_name"; then
+        log "✗ Failed to download $list_name - skipping"
+        return 1
+    fi
     
     # Validate
-    validate_file "$temp_file" "$list_name"
+    if ! validate_file "$temp_file" "$list_name"; then
+        log "✗ Validation failed for $list_name - skipping"
+        rm -f "$temp_file"
+        return 1
+    fi
     
     # Get old block count for reporting
     old_count=$(get_block_count "$output_file")
@@ -435,6 +456,9 @@ process_list() {
         rm -f "$temp_file"
         log "Cleaned up temporary file for $list_name"
     fi
+    
+    log "✓ Successfully updated $list_name"
+    return 0
 }
 
 show_usage() {
@@ -461,6 +485,7 @@ Environment Variables:
   RETRY_DELAY      Delay between retries in seconds (default: 5)
   DRY_RUN          Set to "true" for dry run
   QUIET            Set to "true" for quiet mode
+  MIN_DISK_SPACE   Minimum disk space in MB (default: 50)
 EOF
 }
 
@@ -489,7 +514,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.0"
+                echo "Firewalla Unbound Blocklist Update Script v2.1"
                 exit 0
                 ;;
             *)
@@ -535,41 +560,56 @@ main() {
         error_exit "No blocklists configured"
     fi
     
-    # Process each list
+    # Process each list - continue even if one fails
     local failed_lists=()
+    local success_lists=()
     for list_entry in "${BLOCKLISTS[@]}"; do
         IFS='|' read -r list_name url output_file <<< "$list_entry"
         
         if process_list "$list_name" "$url" "$output_file"; then
-            log "✓ Successfully updated $list_name"
+            success_lists+=("$list_name")
         else
-            log "✗ Failed to update $list_name"
             failed_lists+=("$list_name")
+            log "✗ Failed to update $list_name - continuing with next list"
         fi
     done
     
-    # Fix ownership of the entire config directory
-    fix_ownership "/home/pi/.firewalla/config"
-    
-    # Restart Unbound once after all updates (respects DRY_RUN)
-    if ! restart_unbound; then
-        error_exit "Update failed during restart phase"
-    fi
-    
-    # Verify Unbound is working (respects DRY_RUN)
-    if [[ "$DRY_RUN" != "true" ]]; then
-        verify_unbound
+    # If we had at least one successful update, proceed with restart
+    if [[ ${#success_lists[@]} -gt 0 ]]; then
+        # Fix ownership of the entire config directory
+        fix_ownership "/home/pi/.firewalla/config"
+        
+        # Restart Unbound once after all updates (respects DRY_RUN)
+        if ! restart_unbound; then
+            error_exit "Update failed during restart phase"
+        fi
+        
+        # Verify Unbound is working (respects DRY_RUN)
+        if [[ "$DRY_RUN" != "true" ]]; then
+            verify_unbound
+        else
+            log "DRY RUN: Skipping Unbound verification"
+        fi
     else
-        log "DRY RUN: Skipping Unbound verification"
+        log "ERROR: No lists were successfully updated!"
+        log "  Please check your .env file and URLs"
+        error_exit "All lists failed to update"
     fi
     
     # Report results
     log "=========================================="
     log "Update Summary:"
-    if [[ ${#failed_lists[@]} -eq 0 ]]; then
-        log "✓ All lists updated successfully!"
-    else
-        log "⚠ Some lists failed: ${failed_lists[*]}"
+    log "✓ Successfully updated: ${#success_lists[@]} list(s)"
+    if [[ ${#success_lists[@]} -gt 0 ]]; then
+        for list in "${success_lists[@]}"; do
+            log "  - $list"
+        done
+    fi
+    if [[ ${#failed_lists[@]} -gt 0 ]]; then
+        log "⚠ Failed to update: ${#failed_lists[@]} list(s)"
+        for list in "${failed_lists[@]}"; do
+            log "  - $list"
+        done
     fi
     if [[ "$DRY_RUN" == "true" ]]; then
         log "ℹ DRY RUN - No changes were applied"
