@@ -94,7 +94,6 @@ cleanup_unbound_includes() {
 
     log "Checking for old 'include:' lines pointing to $UNBOUND_LOCAL_DIR..."
 
-    # Check if any include lines exist that point to our directory
     if ! grep -q "^include:.*$UNBOUND_LOCAL_DIR" "$UNBOUND_CUSTOM_CONF"; then
         log "✓ No redundant include lines found."
         return 0
@@ -105,8 +104,6 @@ cleanup_unbound_includes() {
     cp "$UNBOUND_CUSTOM_CONF" "$backup_file"
     log "Backup created: $backup_file"
 
-    # Remove lines that start with "include:" and contain the unbound_local path
-    # Use sed to delete matching lines
     if [[ "$DRY_RUN" == "true" ]]; then
         log "DRY RUN: Would remove include lines from $UNBOUND_CUSTOM_CONF"
         grep "^include:.*$UNBOUND_LOCAL_DIR" "$UNBOUND_CUSTOM_CONF" | while read -r line; do
@@ -221,32 +218,38 @@ detect_format_and_convert() {
     
     if head -50 "$input_file" | grep -q "CNAME \."; then
         log "Detected RPZ format - converting..."
-        return convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     if head -50 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
         log "Detected Wildcard format - converting..."
-        return convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     if head -50 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
         log "Detected Hosts file format - converting..."
-        return convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     if head -50 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
         log "Detected Adblock format - converting..."
-        return convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     if head -50 "$input_file" | grep -qE "^address=/"; then
         log "Detected DNSMasq format - converting..."
-        return convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     if head -20 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
         log "Detected plain domains format - converting..."
-        return convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
+        convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
     fi
     
     log "ERROR: Unable to detect format for $list_name"
@@ -565,8 +568,10 @@ verify_unbound() {
     fi
     
     log "Checking Unbound logs for errors..."
-    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -iE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" | wc -l || echo "0")
-    if [[ $error_count -eq 0 ]]; then
+    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -ciE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" || echo "0")
+    # Remove any whitespace or newlines that might cause issues
+    error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')
+    if [[ "$error_count" -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
     else
         log "WARNING: Found $error_count errors in Unbound logs"
@@ -721,10 +726,10 @@ oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oi
 # hagezi_ultimate|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt|/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf
 
 # HaGeZi TIF - RPZ format (auto-converts)
-# hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
+hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
 
 # HaGeZi DoH - RPZ format (auto-converts)
-# hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
+hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
 
 # HaGeZi TIF - Wildcard format (auto-converts)
 # hagezi_tif_wildcard|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif_wildcard.conf
@@ -880,7 +885,7 @@ main() {
                 shift 2
                 ;;
             -v|--version)
-                echo "Firewalla Unbound Blocklist Update Script v2.4"
+                echo "Firewalla Unbound Blocklist Update Script v2.5"
                 exit 0
                 ;;
             *)
