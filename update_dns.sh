@@ -1,22 +1,6 @@
 #!/bin/bash
 
-# =============================================================================
-# Firewalla Unbound Blocklist Update Script
-# =============================================================================
-# Description: Downloads and validates Unbound-formatted blocklists with
-#              safety checks, logging, and automatic rollback on failure.
-#              Supports multiple blocklists via .env configuration file.
-#              AUTO-DETECTS and converts various list formats to Unbound format.
-#              Automatically removes blocklists that are no longer enabled.
-#              Cleans up old "include:" lines from Unbound config.
-# =============================================================================
-
 set -euo pipefail
-
-# =============================================================================
-# Configuration
-# =============================================================================
-
 ENV_FILE="${ENV_FILE:-/home/pi/.firewalla/config/blocklists.env}"
 LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
@@ -26,18 +10,9 @@ QUIET="${QUIET:-false}"
 MIN_DISK_SPACE="${MIN_DISK_SPACE:-50}"  # MB
 UNBOUND_LOCAL_DIR="/home/pi/.firewalla/config/unbound_local"
 UNBOUND_CUSTOM_CONF="${UNBOUND_LOCAL_DIR}/unbound_custom.conf"
-# NEW: temp directory outside of unbound_local to avoid accidental inclusion
 TMP_DIR="/home/pi/.firewalla/tmp/unbound_update"
-
-# Create temporary directory if it doesn't exist
 mkdir -p "$TMP_DIR"
-
-# Cleanup trap: remove temporary files on exit
 trap 'rm -f "$TMP_DIR"/*_tmp.conf "$TMP_DIR"/*_converted.conf 2>/dev/null; rmdir "$TMP_DIR" 2>/dev/null || true' EXIT INT TERM
-
-# =============================================================================
-# Functions
-# =============================================================================
 
 log() {
     if [[ "$QUIET" == "true" ]]; then
@@ -87,9 +62,6 @@ check_curl_installed() {
     log "✓ curl found"
 }
 
-# -----------------------------------------------------------------------------
-# Cleanup old "include:" lines from Unbound config
-# -----------------------------------------------------------------------------
 cleanup_unbound_includes() {
     if [[ ! -f "$UNBOUND_CUSTOM_CONF" ]]; then
         log "ℹ Unbound custom config not found, skipping include cleanup."
@@ -119,9 +91,6 @@ cleanup_unbound_includes() {
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Log Rotation Setup
-# -----------------------------------------------------------------------------
 setup_log_rotation() {
     local log_file="$1"
     local rotate_config="/etc/logrotate.d/unbound_update"
@@ -136,8 +105,6 @@ setup_log_rotation() {
     log "Setting up log rotation for $log_file..."
     
     if sudo tee "$rotate_config" > /dev/null << EOF 2>/dev/null
-# Log rotation for Firewalla Unbound update script
-# Configured by update_dns.sh on $(date)
 
 $log_file {
     daily
@@ -168,10 +135,6 @@ EOF
         log "  You can manually configure it by creating: $rotate_config"
     fi
 }
-
-# -----------------------------------------------------------------------------
-# Download functions
-# -----------------------------------------------------------------------------
 
 download_with_retry() {
     local url="$1"
@@ -205,9 +168,6 @@ download_with_retry() {
     return 0
 }
 
-# -----------------------------------------------------------------------------
-# Format detection and conversion
-# -----------------------------------------------------------------------------
 detect_format_and_convert() {
     local input_file="$1"
     local output_file="$2"
@@ -260,10 +220,6 @@ detect_format_and_convert() {
     log "  Supported formats: Unbound, RPZ, Wildcard, Hosts, Adblock, DNSMasq, Plain domains"
     return 1
 }
-
-# -----------------------------------------------------------------------------
-# Individual format converters - all use awk, no slow while read loops
-# -----------------------------------------------------------------------------
 
 write_unbound_header() {
     local output_file="$1"
@@ -444,10 +400,6 @@ convert_domains_to_unbound() {
     log "✓ Plain domains conversion successful"
     return 0
 }
-
-# -----------------------------------------------------------------------------
-# Validation and update functions
-# -----------------------------------------------------------------------------
 
 validate_file() {
     local file="$1"
@@ -876,10 +828,6 @@ Environment Variables:
 EOF
 }
 
-# =============================================================================
-# Main Execution
-# =============================================================================
-
 main() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -1000,10 +948,6 @@ main() {
     log "Update completed!"
     log "=========================================="
 }
-
-# =============================================================================
-# Execution
-# =============================================================================
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
