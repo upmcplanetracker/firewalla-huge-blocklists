@@ -1,6 +1,8 @@
 #!/bin/bash
 
 set -euo pipefail
+
+export FIREWALLA_HOME=/home/pi/firewalla
 ENV_FILE="${ENV_FILE:-/home/pi/.firewalla/config/blocklists.env}"
 LOG_FILE="${LOG_FILE:-/var/log/unbound_update.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
@@ -55,11 +57,17 @@ check_command() {
     fi
 }
 
-check_curl_installed() {
+ensure_curl_installed() {
     if ! command -v curl &> /dev/null; then
-        error_exit "curl is required but not installed. Please install manually: sudo apt install curl"
+        log "⚠ curl not found. Installing persistently via Firewalla wrapper..."
+        if /home/pi/firewalla/scripts/apt-get.sh install curl; then
+            log "✓ curl installed successfully"
+        else
+            error_exit "Failed to install curl. Please install manually."
+        fi
+    else
+        log "✓ curl found"
     fi
-    log "✓ curl found"
 }
 
 cleanup_unbound_includes() {
