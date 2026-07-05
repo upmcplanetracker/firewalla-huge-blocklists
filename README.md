@@ -8,7 +8,6 @@ Files in this Repository
 
 *   **`update_dns.sh`** – The main script that downloads, validates, and updates your blocklists. Auto-detects and converts multiple formats.
 *   **`blocklists.env`** – Your personal configuration file to define which lists to use. **This file is never overwritten by the script after creation.**
-*   **`README.md`** – This guide.
 
 * * *
 
@@ -17,10 +16,10 @@ Critical: Before You Begin
 
 ### 1\. External List Management
 
-*   **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD big, HaGeZi Ultimate or Pro++).
-*   **App Stats:** Blocks from these external lists **will not** appear in your "Blocked Flows" or app stats. I do have CLI commands below that will show you live, past 1 hour, and past 7 day blocked sites.
-*   **App Toggles:** You cannot enable or disable these lists via the Firewalla app interface. All management must be done via SSH.
-*   **DNS Booster:** You must keep the **DNS Booster ON** in the Firewall app. It is required for Firewalla to intercept your traffic and hand it to Unbound.
+*   **Scope:** This guide is strictly for non-Firewalla provided lists (e.g., OISD Big, HaGeZi Ultimate or Pro++).
+*   **App Stats:** Blocks from these external lists **will not** appear in your MSP/app "Blocked Flows" or stats. I do have CLI commands below that will show you live, past 1 hour, and past 7 day blocked sites.
+*   **App Toggles:** You cannot enable or disable these lists via the Firewalla interface. All management must be done via SSH.
+*   **DNS Booster:** You must keep the **DNS Booster ON** in the Firewalla app since it is required to intercept your traffic and hand it to Unbound.
 *   **Unbound:** You must be using Unbound as the DNS resolver. Please visit my [Firewalla Unbound Configuration repo](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config) first to learn how to set the Unbound cache size.
 
 ### 2\. Format & Compatibility
