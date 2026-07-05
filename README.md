@@ -65,12 +65,10 @@ Installation & Configuration
 
 SSH into your Firewalla and ensure required tools are available:
 
-    unalias apt
-    sudo apt update
     # NEVER run sudo apt upgrade - it will probably break your Firewalla
-    
+    # We will use the Firewalla written safe apt-get.sh instead
     # Install nano for editing (if not already installed)
-    sudo apt install nano
+    /home/pi/firewalla/scripts/apt-get.sh install nano
 
     # curl is already built into Firewalla.
 
