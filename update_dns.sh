@@ -92,7 +92,7 @@ cleanup_unbound_includes() {
         log "DRY RUN: Would remove include lines from $UNBOUND_CUSTOM_CONF"
         grep "^include:.*$UNBOUND_LOCAL_DIR" "$UNBOUND_CUSTOM_CONF" | while read -r line; do
             log "  Would remove: $line"
-        done
+        done || true
     else
         sudo sed -i "\|^include:.*$UNBOUND_LOCAL_DIR|d" "$UNBOUND_CUSTOM_CONF"
         log "✓ Removed redundant include lines from $UNBOUND_CUSTOM_CONF"
@@ -188,37 +188,37 @@ detect_format_and_convert() {
         return 0
     fi
     
-    if head -50 "$input_file" | grep -q "CNAME \."; then
+    if head -150 "$input_file" | grep -q "CNAME \."; then
         log "Detected RPZ format - converting..."
         convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
     
-    if head -50 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
+    if head -150 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
         log "Detected Wildcard format - converting..."
         convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
     
-    if head -50 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
+    if head -150 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
         log "Detected Hosts file format - converting..."
         convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
     
-    if head -50 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
+    if head -150 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
         log "Detected Adblock format - converting..."
         convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
     
-    if head -50 "$input_file" | grep -qE "^address=/"; then
+    if head -150 "$input_file" | grep -qE "^address=/"; then
         log "Detected DNSMasq format - converting..."
         convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
     
-    if head -20 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
+    if head -150 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
         log "Detected plain domains format - converting..."
         convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
@@ -246,6 +246,7 @@ convert_rpz_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^\$/ { next }
@@ -276,6 +277,7 @@ convert_wildcard_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         {
@@ -304,6 +306,7 @@ convert_hosts_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+/ {
@@ -331,6 +334,7 @@ convert_adblock_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^\|\|/ {
@@ -361,6 +365,7 @@ convert_dnsmasq_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^address=\// {
@@ -390,6 +395,7 @@ convert_domains_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ { next }
@@ -445,7 +451,7 @@ validate_file() {
     fi
     log "✓ File contains $line_count entries"
     
-    if grep -E "local-zone:[[:space:]]*$" "$file" | grep -q .; then
+    if grep -qE 'local-zone: "\." always_null|local-zone: "" always_null' "$file"; then
         log "ERROR: Found empty domain entries for $list_name"
         return 1
     fi
@@ -875,16 +881,18 @@ main() {
     log "=========================================="
     
     log "Running pre-flight checks..."
-    check_curl_installed
+    
+    # Enforce root explicitly to prevent permission failures down the line
+    if [[ $EUID -ne 0 ]]; then
+        error_exit "This script must be run as root. Please run again using sudo."
+    fi
+
+    # Fixed function call name
+    ensure_curl_installed
+    
     check_command grep
     check_command systemctl
     check_disk_space
-    
-    if [[ $EUID -ne 0 ]]; then
-        log "Note: Not running as root. Some operations require sudo."
-        log "  The script will use sudo for:"
-        log "  - Restarting Unbound"
-    fi
     
     # Clean up old include lines (runs before anything else)
     cleanup_unbound_includes
