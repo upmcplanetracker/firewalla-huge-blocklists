@@ -187,8 +187,14 @@ detect_format_and_convert() {
         log "✓ Already in Unbound format"
         return 0
     fi
-    
-    if head -150 "$input_file" | grep -q "CNAME \."; then
+
+    if grep -m1 -qE "^local=/" "$input_file"; then
+        log "Detected dnsmasq local format - converting..."
+        convert_local_to_unbound "$input_file" "$output_file" "$list_name"
+        return $?
+    fi
+
+    if grep -m1 -qE "^[a-zA-Z0-9_.-]+[[:space:]]+(CNAME|A|AAAA|NS|SOA|PTR|MX|SRV|TXT)[[:space:]]" "$input_file"; then
         log "Detected RPZ format - converting..."
         convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
@@ -237,6 +243,35 @@ write_unbound_header() {
     } > "$output_file"
 }
 
+convert_local_to_unbound() {
+    local input_file="$1"
+    local output_file="$2"
+    local list_name="$3"
+    
+    log "Converting dnsmasq local format to Unbound for $list_name..."
+    
+    write_unbound_header "$output_file"
+    awk '
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]*[;#]/ { next }
+        /^local=\// {
+            domain = $0
+            sub(/^local=\//, "", domain)
+            sub(/\/$/, "", domain)
+            if (domain != "") {
+                printf "    local-zone: \"%s.\" always_null\n", domain
+            }
+        }
+    ' "$input_file" >> "$output_file"
+    
+    if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
+        log "ERROR: dnsmasq local format conversion failed"
+        return 1
+    fi
+    log "✓ dnsmasq local format conversion successful"
+    return 0
+}
+
 convert_rpz_to_unbound() {
     local input_file="$1"
     local output_file="$2"
@@ -246,15 +281,26 @@ convert_rpz_to_unbound() {
     
     write_unbound_header "$output_file"
     awk '
-        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
+        /^\$TTL/ { next }
+        /^\$ORIGIN/ { next }
+        /^\$SOA/ { next }
+        /^\$NS/ { next }
         /^\$/ { next }
-        /^\*\./ { next }
+        /^[[:space:]]*:/ { next }
+        /^[a-zA-Z0-9_.-]+[[:space:]]+(NS|SOA)[[:space:]]/ { next }
         {
             domain = $1
+            # Strip trailing dot if present
             sub(/\.$/, "", domain)
-            if (domain != "" && domain != "NS" && domain != "SOA") {
+            # Skip if domain is empty or looks like a directive
+            if (domain == "" || domain ~ /^\$/ || domain ~ /^[[:space:]]*$/) next
+            # Skip if it looks like an IP address (not a domain)
+            if (domain ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) next
+            # Skip wildcard prefix for the domain itself (we block the whole zone)
+            sub(/^\*\./, "", domain)
+            if (domain != "") {
                 printf "    local-zone: \"%s.\" always_null\n", domain
             }
         }
