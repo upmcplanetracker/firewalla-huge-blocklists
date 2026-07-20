@@ -137,8 +137,8 @@ Each line defines one blocklist. To enable a list, remove the `#` at the start o
     # HaGeZi Pro List (auto-converts from Unbound format)
     hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
     
-    # HaGeZi TIF (RPZ format - auto-converts)
-    hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
+    # HaGeZi TIF (Adblock format - auto-converts)
+    hagezi_tif|https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
     
     # Steven Black's Hosts File (hosts format - auto-converts)
     stevenblack|https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|/home/pi/.firewalla/config/unbound_local/stevenblack.conf
@@ -435,7 +435,7 @@ The script will automatically delete the corresponding `.conf` file on the next 
 | OISD Big | `https://big.oisd.nl/unbound` | ~400k+ | High |
 | HaGeZi Pro | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt` | ~150k | Mid |
 | HaGeZi Ultimate | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt` | ~500k+ | High |
-| HaGeZi TIF (RPZ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt` | ~1.5M | High |
+| HaGeZi TIF (Adblock) | `https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.txt` | ~1.5M | High |
 | HaGeZi DoH (RPZ) | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt` | ~3-5k | Any |
 | Steven Black's Hosts | `https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts` | ~100k+ | Mid/High |
 
@@ -539,7 +539,7 @@ If the script says "Unable to detect format", it means the list is in an unrecog
 
 1.  Check the URL is correct
 2.  Make sure the list contains domain names (not just IP addresses)
-3.  Try a different URL from the same provider (e.g., use the Unbound format instead of RPZ)
+3.  Try a different URL from the same provider (e.g., use the Unbound format instead of Adblock)
 
 ### "Connection refused" when testing DNS
 
