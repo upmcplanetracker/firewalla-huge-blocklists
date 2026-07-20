@@ -205,7 +205,7 @@ The script can be scheduled to run automatically using cron. Here are several sc
 
 Update all lists every Sunday at midnight:
 
-    crontab -e
+    sudo crontab -e
 
 Add this line:
 
