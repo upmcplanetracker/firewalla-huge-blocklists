@@ -17,11 +17,11 @@ mkdir -p "$TMP_DIR"
 trap 'rm -f "$TMP_DIR"/*_tmp.conf "$TMP_DIR"/*_converted.conf 2>/dev/null; rmdir "$TMP_DIR" 2>/dev/null || true' EXIT INT TERM
 
 log() {
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     if [[ "$QUIET" == "true" ]]; then
-        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         echo "[$timestamp] $1" >> "$LOG_FILE"
     else
-        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
         echo "[$timestamp] $1" | tee -a "$LOG_FILE"
     fi
 }
@@ -41,8 +41,9 @@ fix_ownership() {
 
 check_disk_space() {
     local required_space=$MIN_DISK_SPACE
-    local available_space=$(df -m "$TMP_DIR" | awk 'NR==2 {print $4}')
-    
+    local available_space
+    available_space=$(df -m "$TMP_DIR" | awk 'NR==2 {print $4}')
+
     if [[ $available_space -lt $required_space ]]; then
         log "WARNING: Low disk space: ${available_space}MB available, ${required_space}MB recommended"
         log "  Firewalla may dynamically free space as needed"
@@ -102,18 +103,17 @@ cleanup_unbound_includes() {
 setup_log_rotation() {
     local log_file="$1"
     local rotate_config="/etc/logrotate.d/unbound_update"
-    
+
     log "Checking log rotation configuration..."
-    
+
     if [[ -f "$rotate_config" ]]; then
         log "✓ Log rotation already configured at $rotate_config"
         return 0
     fi
-    
-    log "Setting up log rotation for $log_file..."
-    
-    if sudo tee "$rotate_config" > /dev/null << EOF 2>/dev/null
 
+    log "Setting up log rotation for $log_file..."
+
+    if sudo tee "$rotate_config" > /dev/null << EOF 2>/dev/null
 $log_file {
     daily
     rotate 7
@@ -132,7 +132,7 @@ EOF
         log "  - Rotated daily"
         log "  - Keep 7 days of logs"
         log "  - Compressed old logs"
-        
+
         if sudo logrotate -f "$rotate_config" 2>/dev/null; then
             log "✓ Log rotation test passed"
         else
@@ -150,9 +150,9 @@ download_with_retry() {
     local list_name="$3"
     local attempt=1
     local success=false
-    
+
     log "Downloading $list_name from $url (attempt $attempt/$MAX_RETRIES)"
-    
+
     while [[ $attempt -le $MAX_RETRIES ]]; do
         if curl -f -L -o "$output_file" --connect-timeout 30 --max-time 300 "$url" 2>/dev/null; then
             success=true
@@ -166,12 +166,12 @@ download_with_retry() {
             ((attempt++))
         fi
     done
-    
+
     if [[ $success == false ]]; then
         log "ERROR: Failed to download $list_name after $MAX_RETRIES attempts"
         return 1
     fi
-    
+
     log "Download completed successfully for $list_name"
     return 0
 }
@@ -180,9 +180,9 @@ detect_format_and_convert() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Analyzing format for $list_name..."
-    
+
     if grep -q "local-zone:" "$input_file"; then
         log "✓ Already in Unbound format"
         return 0
@@ -199,37 +199,37 @@ detect_format_and_convert() {
         convert_rpz_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     if head -150 "$input_file" | grep -qE "^\*\.|[[:space:]]\*\."; then
         log "Detected Wildcard format - converting..."
         convert_wildcard_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     if head -150 "$input_file" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+"; then
         log "Detected Hosts file format - converting..."
         convert_hosts_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     if head -150 "$input_file" | grep -qE "^\|\|[^*]+\^"; then
         log "Detected Adblock format - converting..."
         convert_adblock_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     if head -150 "$input_file" | grep -qE "^address=/"; then
         log "Detected DNSMasq format - converting..."
         convert_dnsmasq_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     if head -150 "$input_file" | grep -qE "^[a-zA-Z0-9\.-]+$"; then
         log "Detected plain domains format - converting..."
         convert_domains_to_unbound "$input_file" "$output_file" "$list_name"
         return $?
     fi
-    
+
     log "ERROR: Unable to detect format for $list_name"
     log "  Supported formats: Unbound, RPZ, Wildcard, Hosts, Adblock, DNSMasq, Plain domains"
     return 1
@@ -247,11 +247,12 @@ convert_local_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting dnsmasq local format to Unbound for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^local=\// {
@@ -263,7 +264,7 @@ convert_local_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: dnsmasq local format conversion failed"
         return 1
@@ -276,11 +277,12 @@ convert_rpz_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting RPZ to Unbound format for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
+        { sub(/\r$/, "", $0) }
         /^[[:space:]]*$/ { next }
         /^[[:space:]]*[;#]/ { next }
         /^\$TTL/ { next }
@@ -305,7 +307,7 @@ convert_rpz_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: RPZ conversion failed"
         return 1
@@ -318,9 +320,9 @@ convert_wildcard_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting Wildcard to Unbound format for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
         { sub(/\r$/, "", $0) }
@@ -334,7 +336,7 @@ convert_wildcard_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Wildcard conversion failed"
         return 1
@@ -347,9 +349,9 @@ convert_hosts_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting Hosts format to Unbound for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
         { sub(/\r$/, "", $0) }
@@ -362,7 +364,7 @@ convert_hosts_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Hosts conversion failed"
         return 1
@@ -375,9 +377,9 @@ convert_adblock_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting Adblock format to Unbound for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
         { sub(/\r$/, "", $0) }
@@ -393,7 +395,7 @@ convert_adblock_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Adblock conversion failed"
         return 1
@@ -406,9 +408,9 @@ convert_dnsmasq_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting DNSMasq format to Unbound for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
         { sub(/\r$/, "", $0) }
@@ -423,7 +425,7 @@ convert_dnsmasq_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: DNSMasq conversion failed"
         return 1
@@ -436,9 +438,9 @@ convert_domains_to_unbound() {
     local input_file="$1"
     local output_file="$2"
     local list_name="$3"
-    
+
     log "Converting plain domains to Unbound format for $list_name..."
-    
+
     write_unbound_header "$output_file"
     awk '
         { sub(/\r$/, "", $0) }
@@ -452,7 +454,7 @@ convert_domains_to_unbound() {
             }
         }
     ' "$input_file" >> "$output_file"
-    
+
     if [[ ! -s "$output_file" ]] || ! grep -q "local-zone:" "$output_file"; then
         log "ERROR: Domains conversion failed"
         return 1
@@ -464,45 +466,46 @@ convert_domains_to_unbound() {
 validate_file() {
     local file="$1"
     local list_name="$2"
-    
+
     log "Starting validation for $list_name..."
-    
+
     if [[ ! -s "$file" ]]; then
         log "ERROR: Downloaded file is empty for $list_name"
         return 1
     fi
     log "✓ File is not empty"
-    
+
     if grep -qiE "<html|<head|<body|<!DOCTYPE" "$file"; then
         log "ERROR: Downloaded HTML instead of blocklist for $list_name"
         return 1
     fi
     log "✓ File is not HTML"
-    
+
     local temp_converted="${TMP_DIR}/${list_name}_converted.conf"
     if ! detect_format_and_convert "$file" "$temp_converted" "$list_name"; then
         log "ERROR: Format detection/conversion failed for $list_name"
         return 1
     fi
-    
+
     if [[ -f "$temp_converted" ]]; then
         mv "$temp_converted" "$file"
         log "✓ Applied converted format"
     fi
-    
-    local line_count=$(grep -c "local-zone:" "$file" || echo "0")
+
+    local line_count
+    line_count=$(grep -c "local-zone:" "$file" || echo "0")
     if [[ $line_count -lt 100 ]]; then
         log "ERROR: Suspiciously low number of entries for $list_name: $line_count (expected at least 100)"
         return 1
     fi
     log "✓ File contains $line_count entries"
-    
+
     if grep -qE 'local-zone: "\." always_null|local-zone: "" always_null' "$file"; then
         log "ERROR: Found empty domain entries for $list_name"
         return 1
     fi
     log "✓ No empty domain entries found"
-    
+
     log "All validation checks passed for $list_name"
     return 0
 }
@@ -511,26 +514,26 @@ apply_update() {
     local source_file="$1"
     local target_file="$2"
     local list_name="$3"
-    
+
     if [[ "$DRY_RUN" == "true" ]]; then
         log "DRY RUN: Would apply update for $list_name"
         return 0
     fi
-    
+
     log "Applying update for $list_name..."
-    
+
     if [[ -f "$target_file" ]]; then
         cp "$target_file" "${target_file}.backup"
         log "Created backup: ${target_file}.backup"
     fi
-    
+
     if mv "$source_file" "$target_file" 2>/dev/null; then
         log "Installed new configuration: $target_file"
     else
         log "ERROR: Failed to move $source_file to $target_file"
         return 1
     fi
-    
+
     chown pi:pi "$target_file" 2>/dev/null || true
     log "Fixed ownership for $target_file"
     return 0
@@ -541,19 +544,19 @@ restart_unbound() {
         log "DRY RUN: Would restart Unbound"
         return 0
     fi
-    
+
     log "Restarting Unbound..."
-    
+
     if ! sudo systemctl restart unbound; then
         log "ERROR: Unbound failed to restart! Restoring all backups..."
-        
+
         find "$UNBOUND_LOCAL_DIR" -name "*.backup" -type f | while read -r backup; do
             local original="${backup%.backup}"
             mv "$backup" "$original"
             log "Restored $original from backup"
             chown pi:pi "$original" 2>/dev/null || true
         done
-        
+
         if sudo systemctl restart unbound; then
             log "Unbound restarted successfully with backup configs"
         else
@@ -561,27 +564,33 @@ restart_unbound() {
         fi
         return 1
     fi
-    
+
     log "✓ Unbound restarted successfully"
 }
 
 verify_unbound() {
     log "Verifying Unbound status..."
     sleep 2
-    
+
     if ! systemctl is-active --quiet unbound; then
         error_exit "Unbound is not running after restart!"
     fi
     log "✓ Unbound is running"
-    
-    local memory_mb=$(free -m | awk '/Mem:/ {print $3}')
-    local total_mb=$(free -m | awk '/Mem:/ {print $2}')
-    local percent=$((memory_mb * 100 / total_mb))
-    log "Memory usage: ${memory_mb}MB / ${total_mb}MB (${percent}%)"
-    if [[ $percent -gt 90 ]]; then
-        log "WARNING: High memory usage! Consider using a smaller blocklist."
+
+    local memory_mb total_mb percent
+    memory_mb=$(free -m | awk '/Mem:/ {print $3}')
+    total_mb=$(free -m | awk '/Mem:/ {print $2}')
+
+    if [[ "$total_mb" -eq 0 ]]; then
+        log "WARNING: Could not determine total memory"
+    else
+        percent=$((memory_mb * 100 / total_mb))
+        log "Memory usage: ${memory_mb}MB / ${total_mb}MB (${percent}%)"
+        if [[ $percent -gt 90 ]]; then
+            log "WARNING: High memory usage! Consider using a smaller blocklist."
+        fi
     fi
-    
+
     log "Testing DNS resolution..."
     if command -v dig &> /dev/null; then
         if dig google.com +short &> /dev/null; then
@@ -598,9 +607,10 @@ verify_unbound() {
     else
         log "⚠ dig/nslookup not available, skipping DNS resolution test"
     fi
-    
+
     log "Checking Unbound logs for errors..."
-    local error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -ciE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" || echo "0")
+    local error_count
+    error_count=$(sudo journalctl -u unbound --since "1 minute ago" 2>/dev/null | grep -ciE "error|fatal" | grep -v "duplicate local-zone" | grep -v "SSL_read" || echo "0")
     error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')
     if [[ "$error_count" -eq 0 ]]; then
         log "✓ No errors in Unbound logs"
@@ -610,23 +620,25 @@ verify_unbound() {
             log "  - $line"
         done
     fi
-    
+
     for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
         if [[ -f "$conf_file" && "$conf_file" != *"unbound_custom.conf" && "$conf_file" != *"unbound_local.conf" ]]; then
-            local block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
+            local block_count
+            block_count=$(grep -c "local-zone:" "$conf_file" 2>/dev/null || echo "0")
             if [[ $block_count -gt 0 ]]; then
                 log "✓ $(basename "$conf_file") loaded with $block_count entries"
             fi
         fi
     done
-    
+
     log "✓ Unbound verification complete"
 }
 
 get_block_count() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local count=$(grep -c "local-zone:" "$file" 2>/dev/null || echo "0")
+        local count
+        count=$(grep -c "local-zone:" "$file" 2>/dev/null || echo "0")
         echo "$count"
     else
         echo "0"
@@ -645,7 +657,8 @@ cleanup_old_lists() {
     local keep_files=("unbound_custom.conf" "unbound_local.conf")
 
     for conf_file in "$UNBOUND_LOCAL_DIR"/*.conf; do
-        local basename=$(basename "$conf_file")
+        local basename
+        basename=$(basename "$conf_file")
         for keep in "${keep_files[@]}"; do
             if [[ "$basename" == "$keep" ]]; then
                 continue 2
@@ -672,42 +685,51 @@ parse_env_file() {
     local env_file="$1"
     local -n list_array="$2"
     local -n output_files="$3"
-    
+
     list_array=()
     output_files=()
-    
+
     if [[ ! -f "$env_file" ]]; then
         log "WARNING: No env file found at $env_file"
         return 1
     fi
-    
+
     log "Loading configuration from $env_file"
-    
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        
+
+        # Skip lines that don't look like valid entries (must contain two | separators)
         if [[ "$line" =~ ^[[:space:]]*([^|]+)\|[[:space:]]*([^|]+)\|[[:space:]]*(.+)$ ]]; then
             local name="${BASH_REMATCH[1]}"
             local url="${BASH_REMATCH[2]}"
             local output="${BASH_REMATCH[3]}"
-            
+
             name=$(echo "$name" | xargs)
             url=$(echo "$url" | xargs)
             output=$(echo "$output" | xargs)
-            
+
+            # Basic URL validation
+            if [[ ! "$url" =~ ^https?:// ]]; then
+                log "WARNING: Skipping $name - URL does not start with http:// or https://"
+                continue
+            fi
+
             if [[ -n "$name" && -n "$url" && -n "$output" ]]; then
                 list_array+=("$name|$url|$output")
                 output_files+=("$output")
                 log "  Loaded: $name -> $output"
             fi
+        else
+            log "WARNING: Skipping malformed line: $line"
         fi
     done < "$env_file"
-    
+
     if [[ ${#list_array[@]} -eq 0 ]]; then
         log "WARNING: No valid blocklist entries found in $env_file"
         return 1
     fi
-    
+
     log "Loaded ${#list_array[@]} blocklist(s) from $env_file"
     return 0
 }
@@ -718,9 +740,9 @@ create_env_template() {
         chown pi:pi "$ENV_FILE" 2>/dev/null || true
         return 0
     fi
-    
+
     mkdir -p "$(dirname "$ENV_FILE")"
-    
+
     cat > "$ENV_FILE" << 'EOF'
 # =============================================================================
 # Firewalla Unbound Blocklist Configuration
@@ -739,29 +761,31 @@ create_env_template() {
 # - Wildcard (*.domain.com)
 # - Hosts (0.0.0.0 domain.com)
 # - Adblock (||domain.com^)
-# - DNSMasq (address=/domain.com/0.0.0.0)
+# - DNSMasq local (local=/domain.com/)
+# - DNSMasq address (address=/domain.com/0.0.0.0)
 # - Plain domains (domain.com)
 # =============================================================================
 
-# OISD Big List (Unbound format)
+# OISD Big List (Unbound format) - ~400k+ domains, High tier hardware recommended
 oisd_big|https://big.oisd.nl/unbound|/home/pi/.firewalla/config/unbound_local/oisd_big.conf
 
-# HaGeZi Pro List - Unbound format
+# HaGeZi Pro List - Unbound format - ~150k domains, Mid tier hardware
 # hagezi_pro|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/pro.txt|/home/pi/.firewalla/config/unbound_local/hagezi_pro.conf
 
-# HaGeZi Ultimate - Unbound format
+# HaGeZi Ultimate - Unbound format - ~500k+ domains, High tier hardware
 # hagezi_ultimate|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/unbound/ultimate.txt|/home/pi/.firewalla/config/unbound_local/hagezi_ultimate.conf
 
-# HaGeZi TIF - RPZ format (auto-converts)
-hagezi_tif|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
+# HaGeZi TIF - Adblock format (auto-converts) - ~1.5M domains, High tier hardware ONLY
+# Unified full TIF list via jsDelivr CDN (||domain.com^)
+# hagezi_tif|https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif.conf
 
-# HaGeZi DoH - RPZ format (auto-converts)
-hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
+# HaGeZi DoH - RPZ format (auto-converts) - ~3-5k domains, Any hardware
+# hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.txt|/home/pi/.firewalla/config/unbound_local/hagezi_doh.conf
 
 # HaGeZi TIF - Wildcard format (auto-converts)
 # hagezi_tif_wildcard|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.txt|/home/pi/.firewalla/config/unbound_local/hagezi_tif_wildcard.conf
 
-# Steven Black's Hosts File (hosts format - auto-converts)
+# Steven Black's Hosts File (hosts format - auto-converts) - ~100k+ domains
 # stevenblack|https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|/home/pi/.firewalla/config/unbound_local/stevenblack.conf
 
 # EasyList Adblock Format (auto-converts)
@@ -770,10 +794,10 @@ hagezi_doh|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/doh.
 # Custom lists can be added here
 # custom_list|https://example.com/blocklist.txt|/home/pi/.firewalla/config/unbound_local/custom.conf
 EOF
-    
+
     chown pi:pi "$ENV_FILE" 2>/dev/null || true
     chown -R pi:pi "$(dirname "$ENV_FILE")" 2>/dev/null || true
-    
+
     log "✓ Created .env configuration template at $ENV_FILE"
     log "ℹ Please edit $ENV_FILE to customize your blocklists"
     log "  Example: nano $ENV_FILE"
@@ -786,35 +810,37 @@ process_list() {
     local url="$2"
     local output_file="$3"
     local temp_file="${TMP_DIR}/${list_name}_tmp.conf"
-    
+
     log "=========================================="
     log "Processing list: $list_name"
     log "=========================================="
-    
+
     if ! download_with_retry "$url" "$temp_file" "$list_name"; then
         log "✗ Failed to download $list_name - skipping"
         return 1
     fi
-    
+
     if ! validate_file "$temp_file" "$list_name"; then
         log "✗ Validation/conversion failed for $list_name - skipping"
         rm -f "$temp_file"
         return 1
     fi
-    
+
+    local old_count
     old_count=$(get_block_count "$output_file")
     log "Old block count for $list_name: $old_count"
-    
+
     if ! apply_update "$temp_file" "$output_file" "$list_name"; then
         log "✗ Failed to apply update for $list_name - skipping"
         rm -f "$temp_file"
         return 1
     fi
-    
+
     if [[ "$DRY_RUN" != "true" ]]; then
+        local new_count
         new_count=$(get_block_count "$output_file")
         log "New block count for $list_name: $new_count"
-        
+
         if [[ $new_count -gt $old_count ]]; then
             log "✓ $list_name increased by $((new_count - old_count)) domains"
         elif [[ $new_count -lt $old_count ]]; then
@@ -822,7 +848,7 @@ process_list() {
         else
             log "ℹ $list_name unchanged"
         fi
-        
+
         if [[ -f "${output_file}.backup" ]]; then
             rm -f "${output_file}.backup"
             log "Cleaned up backup file for $list_name"
@@ -830,12 +856,12 @@ process_list() {
     else
         log "DRY RUN: Would have reported block count changes"
     fi
-    
+
     if [[ -f "$temp_file" ]]; then
         rm -f "$temp_file"
         log "Cleaned up temporary file for $list_name"
     fi
-    
+
     log "✓ Successfully updated $list_name"
     return 0
 }
@@ -918,34 +944,33 @@ main() {
                 ;;
         esac
     done
-    
+
     log "=========================================="
     log "Starting Unbound blocklist update"
     if [[ "$DRY_RUN" == "true" ]]; then
         log "** DRY RUN MODE - No changes will be applied **"
     fi
     log "=========================================="
-    
+
     log "Running pre-flight checks..."
-    
+
     # Enforce root explicitly to prevent permission failures down the line
     if [[ $EUID -ne 0 ]]; then
         error_exit "This script must be run as root. Please run again using sudo."
     fi
 
-    # Fixed function call name
     ensure_curl_installed
-    
+
     check_command grep
     check_command systemctl
     check_disk_space
-    
+
     # Clean up old include lines (runs before anything else)
     cleanup_unbound_includes
-    
+
     setup_log_rotation "$LOG_FILE"
     create_env_template
-    
+
     declare -a BLOCKLISTS
     declare -a EXPECTED_OUTPUTS
     if ! parse_env_file "$ENV_FILE" BLOCKLISTS EXPECTED_OUTPUTS; then
@@ -954,12 +979,12 @@ main() {
         log "  Format: NAME|URL|OUTPUT_FILE"
         error_exit "No blocklists configured"
     fi
-    
+
     local failed_lists=()
     local success_lists=()
     for list_entry in "${BLOCKLISTS[@]}"; do
         IFS='|' read -r list_name url output_file <<< "$list_entry"
-        
+
         if process_list "$list_name" "$url" "$output_file"; then
             success_lists+=("$list_name")
         else
@@ -967,17 +992,17 @@ main() {
             log "✗ Failed to update $list_name - continuing with next list"
         fi
     done
-    
+
     # Clean up old blocklists that are no longer in .env
     cleanup_old_lists EXPECTED_OUTPUTS
-    
+
     if [[ ${#success_lists[@]} -gt 0 ]]; then
         fix_ownership "$UNBOUND_LOCAL_DIR"
-        
+
         if ! restart_unbound; then
             error_exit "Update failed during restart phase"
         fi
-        
+
         if [[ "$DRY_RUN" != "true" ]]; then
             verify_unbound
         else
@@ -988,7 +1013,7 @@ main() {
         log "  Please check your .env file and URLs"
         error_exit "All lists failed to update"
     fi
-    
+
     log "=========================================="
     log "Update Summary:"
     log "✓ Successfully updated: ${#success_lists[@]} list(s)"
