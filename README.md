@@ -676,3 +676,8 @@ Disclaimer
 ----------
 
 Not affiliated with or endorsed by Firewalla, OISD, or any other organization. Use at your own risk. Always backup your configuration before making changes.
+
+If you are interested in this you may also be interested in my other Firewalla/Unbound repos-
+- [Build and user a newer version of Unbound than stock](https://github.com/upmcplanetracker/firewalla-update-unbound)
+- [Configuring Unbound on Firewalla to use DNS-over-TLS](https://github.com/upmcplanetracker/firewalla-unbound-DoT-config)
+- [Replacing FW Timekeeper with NTS via ntpd-rs](https://github.com/upmcplanetracker/ntpd-rs-nts-for-firewalla)
